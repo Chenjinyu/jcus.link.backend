@@ -1,0 +1,123 @@
+---
+description: Python project rules for FastAPI + LangChain backend
+alwaysApply: false
+---
+
+# Python Project Rules
+
+## General Python Guidelines
+
+- Use Python 3.11+ features (type hints, pattern matching, etc.)
+- Always use type hints for function parameters and return types
+- Use `typing` module for complex types (List, Dict, Optional, Union, etc.)
+- Prefer `pathlib.Path` over string paths for file operations
+- Use f-strings for string formatting
+- Follow PEP 8 style guide (enforced by ruff)
+- Use descriptive variable and function names
+- Keep functions focused and single-purpose
+- Maximum line length: 100 characters (ruff default)
+
+## Async/Await Patterns
+
+- Use `async def` for all FastAPI route handlers
+- Use `await` for all async operations (database, API calls, file I/O)
+- When calling sync functions from async code, use `asyncio.to_thread()` or `run_in_executor()`
+- Never use blocking I/O operations in async functions
+- Use `asyncio.gather()` for concurrent async operations when appropriate
+- Always handle exceptions in async functions with try/except blocks
+
+## FastAPI Best Practices
+
+- Use Pydantic models for request/response validation
+- Always include docstrings for API endpoints
+- Use dependency injection for shared resources (database connections, services)
+- Return appropriate HTTP status codes (200, 201, 400, 404, 500)
+- Use `HTTPException` for error responses with proper status codes and detail messages
+- Include response models in route decorators: `response_model=YourModel`
+- Use `UploadFile` for file uploads, handle file validation
+- Clean up temporary files after processing
+
+## LangChain Patterns
+
+- Use async LangChain components when available (`ainvoke`, `astream`, etc.)
+- Chunk documents appropriately (typically 1000-2000 characters with overlap)
+- Store metadata with embeddings for better retrieval
+- Use appropriate embedding models for the use case
+- Implement proper error handling for vector store operations
+- Use retry logic for external API calls (OpenAI, Anthropic, etc.)
+- Log important operations (ingestion, retrieval, generation)
+
+## Error Handling
+
+- Use specific exception types, not bare `except Exception`
+- Log errors with context (use logging module, not print)
+- Provide meaningful error messages to users
+- Use try/except/finally for resource cleanup
+- Re-raise exceptions with additional context when appropriate
+
+## Code Organization
+
+- Keep modules focused on a single responsibility
+- Use `__init__.py` files to expose public APIs
+- Group related functionality in modules
+- Separate business logic from API routes
+- Use service classes for complex operations
+- Keep configuration in separate files (config.py, YAML files)
+
+## Type Hints
+
+- Always annotate function signatures
+- Use `Optional[Type]` or `Type | None` for nullable values
+- Use `List[Type]`, `Dict[str, Type]` for collections
+- Use `Union[Type1, Type2]` for multiple possible types
+- Import types from `typing` module when needed
+- Use `Any` sparingly, prefer specific types
+
+## Testing
+
+- Write unit tests for business logic
+- Use pytest fixtures for test setup
+- Mock external dependencies (APIs, databases)
+- Test both success and error cases
+- Use descriptive test names: `test_function_name_should_do_something`
+- Keep tests in `tests/` directory
+
+## Imports
+
+- Group imports: standard library, third-party, local
+- Use absolute imports, not relative
+- Sort imports (ruff will handle this)
+- Remove unused imports
+
+## Documentation
+
+- Write docstrings for all public functions and classes
+- Use Google-style or NumPy-style docstrings
+- Include parameter descriptions and return types
+- Document exceptions that may be raised
+- Add comments for complex logic, not obvious code
+
+## Performance
+
+- Use async/await for I/O-bound operations
+- Cache expensive computations when appropriate
+- Use generators for large datasets
+- Avoid unnecessary database queries
+- Profile before optimizing
+
+## Security
+
+- Never log sensitive information (API keys, tokens, passwords)
+- Validate and sanitize user inputs
+- Use environment variables for secrets (not hardcoded)
+- Implement rate limiting for public APIs
+- Use HTTPS in production
+
+## Project-Specific Rules
+
+- Use `uv` for package management (not pip)
+- Run `ruff check` and `ruff format` before committing
+- Use `pytest` for testing
+- Follow the existing project structure
+- Use YAML files for configuration when appropriate
+- Keep LangChain chains modular and reusable

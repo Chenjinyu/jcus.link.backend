@@ -1,0 +1,338 @@
+---
+description: Technology stack overview with dependency versions and best practices
+alwaysApply: true
+---
+
+# Technology Stack
+
+## Core Runtime
+
+### Python
+- **Version**: `>=3.11`
+- **Best Practices**:
+  - Use Python 3.11+ features: structural pattern matching, improved error messages, exception groups
+  - Leverage `typing.Required` and `typing.NotRequired` for TypedDict
+  - Use `Self` type for method chaining
+  - Prefer `match/case` over multiple if/elif for pattern matching
+  - Use `asyncio.TaskGroup` for concurrent async operations (Python 3.11+)
+
+### Package Management
+- **Tool**: `uv` (ultra-fast Python package installer)
+- **Build Backend**: `hatchling`
+- **Best Practices**:
+  - Always use `uv` for package management, never `pip`
+  - Use `uv add <package>` to add dependencies
+  - Use `uv run <command>` to run commands in the project environment
+  - Lock file (`uv.lock`) ensures reproducible builds
+  - Default dev dependencies are automatically included via `[tool.uv] default-groups = ["dev"]`
+
+---
+
+## LangChain Ecosystem (v0.3.x)
+
+### Core LangChain Packages
+- **langchain**: `>=0.3.0,<0.4.0`
+- **langchain-core**: `>=0.3.10,<0.4.0`
+- **langchain-community**: `>=0.3.0,<0.4.0`
+- **langsmith**: `==0.4.9` (pinned for compatibility)
+
+**Best Practices for LangChain 0.3.x**:
+- **Async First**: Always use async methods (`ainvoke`, `astream`, `abatch`) when available
+- **LCEL (LangChain Expression Language)**: Use `|` operator for chaining components
+- **Runnable Protocol**: All chains are `Runnable` - use `.invoke()`, `.stream()`, `.batch()` consistently
+- **Type Safety**: Use `langchain_core` types for better IDE support
+- **Streaming**: Use `.stream()` for real-time responses, especially in FastAPI endpoints
+- **Error Handling**: Wrap LangChain calls in try/except, handle `LangChainException` specifically
+- **Memory**: Use `RunnableWithMessageHistory` for conversation memory
+- **Retries**: Implement retry logic for LLM calls (use `tenacity` or built-in retry decorators)
+
+### LLM Providers
+- **langchain-openai**: `>=0.3.12,<0.4.0`
+- **langchain-anthropic**: `>=0.3.10,<0.4.0`
+- **langchain-google-genai**: `>=2.1.2,<3.0.0`
+
+**Best Practices**:
+- **OpenAI**: Use `ChatOpenAI` with `temperature=0` for deterministic results, `temperature=0.7` for creative tasks
+- **Anthropic**: Use `ChatAnthropic` with `max_tokens` set appropriately (default 4096)
+- **Google GenAI**: Use `ChatGoogleGenerativeAI` - note version 2.x has different API than 1.x
+- **Async**: Always use `ChatOpenAI(..., async_client=True)` or async methods
+- **Streaming**: Use `.stream()` for token-by-token responses
+- **Token Management**: Monitor token usage via LangSmith or custom callbacks
+
+### LangGraph
+- **langgraph**: `>=0.4.5`
+- **langgraph-sdk**: `>=0.2,<0.3` (dev dependency)
+
+**Best Practices**:
+- **State Management**: Use TypedDict for state schemas
+- **Nodes**: Keep nodes focused and testable
+- **Edges**: Use conditional edges for dynamic routing
+- **Checkpoints**: Enable checkpoints for long-running workflows
+- **Async**: Use `agraph.ainvoke()` for async execution
+- **Error Handling**: Implement error nodes and recovery paths
+
+---
+
+## Vector Databases & Embeddings
+
+### Weaviate
+- **weaviate-client**: `>=4.0.0,<5.0.0`
+
+**Best Practices**:
+- **Connection**: Use connection pooling for production
+- **Schema**: Define schemas explicitly, use vectorizers or custom embeddings
+- **Queries**: Use hybrid search (vector + keyword) when available
+- **Batch Operations**: Use batch imports for large datasets
+- **Version Compatibility**: v4.x API differs from v3.x - ensure code uses v4 patterns
+
+### Supabase
+- **supabase**: `>=2.25.1`
+
+**Best Practices**:
+- **pgvector**: Use Supabase's built-in pgvector extension for embeddings
+- **Row Level Security**: Enable RLS for multi-tenant applications
+- **Connection Pooling**: Use connection pooling (PgBouncer) in production
+- **Async**: Use async Supabase client when available
+- **Embeddings**: Store embeddings as `vector` type, use cosine similarity for search
+
+### Voyage AI
+- **voyageai**: `>=0.1.4,<0.2.0`
+
+**Best Practices**:
+- **Embedding Models**: Use appropriate model for use case (general vs. domain-specific)
+- **Batch Processing**: Use batch API for multiple texts
+- **Dimension Matching**: Ensure embedding dimensions match vector store schema
+- **Rate Limits**: Implement rate limiting and retry logic
+
+---
+
+## Document Processing
+
+### Unstructured
+- **unstructured**: `>=0.18.21`
+
+**Best Practices**:
+- **Partitioning**: Use `partition()` for document parsing
+- **Strategy**: Choose appropriate strategy (auto, fast, hi_res, ocr_only)
+- **Metadata**: Extract and preserve document metadata
+- **Performance**: Use `hi_res` only when needed (slower but more accurate)
+- **Chunking**: Combine with LangChain text splitters for optimal chunking
+
+### PDF Processing
+- **pypdf**: `>=6.4.1`
+
+**Best Practices**:
+- **Text Extraction**: Use `PdfReader` for text extraction
+- **Metadata**: Extract PDF metadata (title, author, creation date)
+- **Encrypted PDFs**: Handle password-protected PDFs gracefully
+- **Large Files**: Stream large PDFs instead of loading entirely into memory
+
+### Word Documents
+- **python-docx**: `>=1.2.0`
+
+**Best Practices**:
+- **Structure**: Preserve document structure (headings, lists, tables)
+- **Metadata**: Extract document properties
+- **Images**: Handle embedded images appropriately
+- **Styles**: Preserve formatting information when needed
+
+### Web Scraping
+- **beautifulsoup4**: `>=4.12.2,<5.0.0`
+- **lxml**: `>=6,<7.0.0`
+
+**Best Practices**:
+- **Parser**: Use `lxml` parser for better performance: `BeautifulSoup(html, 'lxml')`
+- **Sanitization**: Remove scripts, styles, and unwanted elements
+- **Encoding**: Handle encoding issues explicitly
+- **Rate Limiting**: Implement delays between requests
+- **Error Handling**: Handle network errors and malformed HTML gracefully
+
+### Image Processing
+- **pillow**: `>=10.2.0,<11.0.0`
+
+**Best Practices**:
+- **Formats**: Support common formats (PNG, JPEG, WebP)
+- **Resizing**: Resize images before processing to save memory
+- **Metadata**: Extract EXIF data when needed
+- **Memory**: Use `Image.open()` with context managers for large images
+
+---
+
+## Database
+
+### PostgreSQL
+- **psycopg2-binary**: `>=2.9.9,<3.0.0`
+
+**Best Practices**:
+- **Connection Pooling**: Use connection pooling (e.g., SQLAlchemy pool) in production
+- **Async**: Consider `asyncpg` for async applications (not in current stack)
+- **Prepared Statements**: Use parameterized queries to prevent SQL injection
+- **Transactions**: Use transactions for multi-step operations
+- **pgvector**: Ensure pgvector extension is installed for vector operations
+- **Connection Strings**: Use environment variables for connection strings
+
+---
+
+## HTTP & API
+
+### FastAPI
+- **Version**: Not explicitly in `pyproject.toml` (likely transitive dependency or needs to be added)
+- **Note**: Consider adding `fastapi` and `pydantic` explicitly to dependencies for clarity
+- **Best Practices**:
+  - **Async Routes**: All route handlers should be `async def`
+  - **Pydantic Models**: Use Pydantic v2 models for request/response validation
+  - **Dependency Injection**: Use FastAPI dependencies for shared resources (DB connections, services)
+  - **Response Models**: Always specify `response_model` in route decorators
+  - **Error Handling**: Use `HTTPException` with appropriate status codes
+  - **File Uploads**: Use `UploadFile` for file uploads, handle validation
+  - **Background Tasks**: Use `BackgroundTasks` for non-blocking operations
+  - **CORS**: Configure CORS middleware for web clients
+  - **OpenAPI**: Leverage automatic OpenAPI/Swagger documentation
+  - **Async Context**: Ensure all I/O operations are async (database, HTTP calls, file I/O)
+  - **Resource Cleanup**: Use try/finally or context managers for cleanup
+  - **Middleware**: Use middleware for cross-cutting concerns (logging, auth, etc.)
+
+### Requests
+- **requests**: `>=2.32.5`
+
+**Best Practices**:
+- **Session**: Use `requests.Session()` for connection pooling
+- **Timeout**: Always set timeouts: `requests.get(url, timeout=10)`
+- **Retries**: Implement retry logic with exponential backoff
+- **Async Alternative**: Consider `httpx` for async HTTP (not in current stack)
+- **Error Handling**: Handle `requests.exceptions` appropriately
+- **Note**: In FastAPI async routes, prefer `httpx` over `requests` for async HTTP calls
+
+### FastMCP
+- **fastmcp**: `>=2.14.0`
+
+**Best Practices**:
+- **MCP Protocol**: Follow Model Context Protocol specification
+- **Tools**: Define tools with proper schemas and descriptions
+- **Resources**: Expose resources for context retrieval
+- **Prompts**: Use prompt templates for consistent interactions
+- **Error Handling**: Return proper MCP error responses
+- **Async**: Use async handlers for I/O operations
+
+---
+
+## Utilities
+
+### jq
+- **jq**: `>=1.10.0`
+
+**Best Practices**:
+- **JSON Processing**: Use for complex JSON transformations
+- **Performance**: More efficient than Python loops for large JSON
+- **Queries**: Write reusable jq queries for common transformations
+
+---
+
+## Development Dependencies
+
+### Testing
+- **pytest**: `>=7.3.0,<8.0.0`
+
+**Best Practices**:
+- **Async Tests**: Use `pytest-asyncio` for async test functions
+- **Fixtures**: Create reusable fixtures for common setup
+- **Mocking**: Use `unittest.mock` or `pytest-mock` for mocking
+- **Coverage**: Aim for >80% test coverage on business logic
+- **Test Structure**: Follow `tests/` directory structure
+
+### Code Quality
+- **ruff**: `>=0.13.3,<0.14.0`
+
+**Best Practices**:
+- **Formatting**: Run `ruff format .` before committing
+- **Linting**: Run `ruff check .` to catch issues
+- **Configuration**: Use `pyproject.toml` for ruff configuration
+- **CI Integration**: Run ruff in CI/CD pipeline
+- **Auto-fix**: Use `ruff check --fix .` for auto-fixable issues
+
+### Data Analysis (Dev)
+- **pandas**: `>=2.2.2,<3.0.0`
+
+**Best Practices**:
+- **Use Case**: Primarily for development/testing, not production
+- **Performance**: Use vectorized operations
+- **Memory**: Be mindful of memory usage with large datasets
+
+---
+
+## Version-Specific Considerations
+
+### LangChain 0.3.x Breaking Changes
+- **Import Paths**: Use `langchain_core`, `langchain_community` instead of `langchain`
+- **LCEL**: Prefer LCEL over legacy Chain classes
+- **Async**: Async is now first-class, prefer async methods
+- **Callbacks**: New callback system, migrate from old callbacks
+
+### Python 3.11+ Features to Leverage
+- **Exception Groups**: Use for handling multiple exceptions
+- **TaskGroup**: Use `asyncio.TaskGroup` for concurrent tasks
+- **Self Type**: Use `typing.Self` for method return types
+- **Variadic Generics**: Use `TypeVarTuple` for variadic generics
+
+### Dependency Version Strategy
+- **LangChain**: Pinned to 0.3.x to avoid breaking changes from 0.4.x
+- **LangSmith**: Pinned to 0.4.9 for compatibility
+- **Others**: Use `>=` for minor/patch updates, `<` for major version boundaries
+- **Security**: Regularly update dependencies for security patches
+
+---
+
+## Architecture Patterns
+
+### RAG (Retrieval-Augmented Generation)
+- **Chunking**: 1000-2000 characters with 200-300 character overlap
+- **Embeddings**: Use same model for indexing and querying
+- **Retrieval**: Use hybrid search (vector + keyword) when possible
+- **Reranking**: Consider reranking retrieved documents
+- **Context Window**: Manage context window limits for LLMs
+
+### Async Patterns
+- **FastAPI Routes**: All routes should be async
+- **LangChain**: Use async methods (`ainvoke`, `astream`)
+- **Database**: Use async database clients when available
+- **Concurrency**: Use `asyncio.gather()` for parallel operations
+- **Error Handling**: Properly handle async exceptions
+
+### MCP (Model Context Protocol)
+- **Tools**: Define tools with clear schemas
+- **Resources**: Expose document resources for context
+- **Prompts**: Use prompt templates for consistency
+- **Streaming**: Support streaming responses when possible
+
+---
+
+## Security Considerations
+
+- **API Keys**: Never commit API keys, use environment variables
+- **Secrets Management**: Use secure secret management (e.g., AWS Secrets Manager)
+- **Input Validation**: Validate all user inputs
+- **SQL Injection**: Use parameterized queries
+- **Rate Limiting**: Implement rate limiting for public APIs
+- **CORS**: Configure CORS appropriately for web clients
+- **HTTPS**: Always use HTTPS in production
+
+---
+
+## Performance Optimization
+
+- **Connection Pooling**: Use for databases and HTTP clients
+- **Caching**: Cache expensive computations (embeddings, LLM responses)
+- **Batch Operations**: Batch database and API calls when possible
+- **Streaming**: Use streaming for large responses
+- **Async I/O**: Use async for all I/O-bound operations
+- **Profiling**: Profile before optimizing, use `cProfile` or `py-spy`
+
+---
+
+## Monitoring & Observability
+
+- **LangSmith**: Use LangSmith for LangChain tracing and monitoring
+- **Logging**: Use structured logging with context
+- **Metrics**: Track key metrics (latency, error rates, token usage)
+- **Error Tracking**: Use error tracking service (e.g., Sentry)
+- **Health Checks**: Implement health check endpoints

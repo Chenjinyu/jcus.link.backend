@@ -1,0 +1,329 @@
+---
+description: Guidelines for Continuously Improving Cursor Rules
+alwaysApply: false
+---
+
+## Overview
+
+These rules should evolve with your codebase. This section provides a systematic approach to identifying, extracting, and merging code patterns and best practices into your Cursor rules.
+
+## 1. Pattern Discovery Process
+
+### Identify Recurring Patterns
+
+**When to look for patterns:**
+- During code reviews (note repeated corrections)
+- When refactoring (identify what makes code better)
+- After bug fixes (extract prevention strategies)
+- When onboarding new team members (document common mistakes)
+- When reviewing PRs (note what gets requested to change)
+
+**What to look for:**
+- **Structural patterns**: How modules/classes are organized
+- **Naming conventions**: Function, variable, class naming patterns
+- **Error handling**: Consistent exception handling approaches
+- **API patterns**: Request/response structures, validation patterns
+- **Integration patterns**: How external services are called
+- **Configuration patterns**: How settings and configs are managed
+
+### Extract Patterns from Codebase
+
+**Tools and techniques:**
+```bash
+# Find similar code patterns
+grep -r "pattern_to_find" --include="*.py"
+
+# Analyze import patterns
+grep -r "^import\|^from" --include="*.py" | sort | uniq -c | sort -rn
+
+# Find function definitions to analyze naming
+grep -r "^def\|^async def\|^class" --include="*.py"
+```
+
+**Questions to ask:**
+1. What patterns appear in the best-reviewed code?
+2. What mistakes are frequently caught in reviews?
+3. What patterns make code easier to test?
+4. What patterns improve maintainability?
+5. What patterns align with project dependencies?
+
+## 2. Rule Extraction and Documentation
+
+### Documenting New Patterns
+
+When you identify a pattern, document it with:
+
+1. **Context**: When/why this pattern is used
+2. **Example**: Show good vs. bad examples
+3. **Rationale**: Why this pattern is beneficial
+4. **Exceptions**: When it's okay to deviate
+
+**Example format:**
+```markdown
+## New Pattern Name
+
+- **When to use**: [Context]
+- **Example**: 
+  ```python
+  # ✅ Good
+  # ❌ Bad
+  ```
+- **Rationale**: [Why this matters]
+- **Exceptions**: [When to deviate]
+```
+
+### Validating Patterns
+
+Before adding a rule, verify:
+- [ ] Pattern appears in 3+ places in codebase
+- [ ] Pattern aligns with project dependencies
+- [ ] Pattern doesn't conflict with existing rules
+- [ ] Pattern improves code quality/maintainability
+- [ ] Pattern is enforceable (not too subjective)
+
+## 3. Merging Patterns into Rules
+
+### Integration Strategy
+
+**Step 1: Categorize the Pattern**
+- Determine which existing section it belongs to
+- If no section fits, create a new one
+- Consider if it's project-specific or general Python
+
+**Step 2: Merge or Add**
+- **Merge**: If similar rule exists, enhance it with new details
+- **Add**: If unique, add as new bullet point
+- **Refine**: If conflicts, refine to be more specific
+
+**Step 3: Prioritize**
+- Place most important/frequently violated rules first
+- Group related rules together
+- Use subsections for complex topics
+
+### Example: Merging a New Pattern
+
+**Before:**
+```markdown
+## Error Handling
+- Use specific exception types
+- Log errors with context
+```
+
+**After discovering pattern:**
+```markdown
+## Error Handling
+- Use specific exception types, not bare `except Exception`
+- Log errors with context (use logging module, not print)
+- Include request context in error logs (user_id, request_id, endpoint)
+- Use structured logging: `logger.error("message", extra={"key": "value"})`
+```
+
+## 4. Rule Maintenance Workflow
+
+### Regular Review Schedule
+
+**Weekly (during development):**
+- Note patterns from code reviews
+- Document new patterns discovered
+- Flag rules that seem outdated
+
+**Monthly (dedicated review):**
+- Review all rules for relevance
+- Remove rules that are no longer applicable
+- Consolidate overlapping rules
+- Update examples to match current codebase
+
+**Quarterly (major review):**
+- Audit rules against actual codebase patterns
+- Check if rules align with updated dependencies
+- Validate rules with team members
+- Refactor rule structure if needed
+
+### Review Checklist
+
+When reviewing rules, ask:
+- [ ] Are rules still being followed in new code?
+- [ ] Do rules match current best practices?
+- [ ] Are there new patterns that should be rules?
+- [ ] Are any rules too vague or too strict?
+- [ ] Do rules conflict with each other?
+- [ ] Are examples still relevant?
+
+## 5. Testing Rule Effectiveness
+
+### Validation Methods
+
+**1. Code Review Analysis**
+- Track how often rules are violated
+- Note if violations decrease over time
+- Identify rules that are frequently ignored
+
+**2. AI Assistant Testing**
+- Ask Cursor to generate code following rules
+- Verify generated code matches patterns
+- Refine rules if AI misunderstands
+
+**3. Team Feedback**
+- Survey team on rule clarity
+- Ask which rules are most/least helpful
+- Identify missing rules
+
+**4. Automated Checks**
+- Use linters to enforce some rules
+- Create custom lint rules for patterns
+- Track lint violations over time
+
+### Metrics to Track
+
+- **Rule coverage**: % of code patterns documented
+- **Violation rate**: Frequency of rule violations
+- **Rule clarity**: Team understanding of rules
+- **AI compliance**: How well AI follows rules
+
+## 6. Best Practices for Rule Writing
+
+### Rule Quality Criteria
+
+**Good rules are:**
+- ✅ **Specific**: Clear and unambiguous
+- ✅ **Actionable**: Easy to follow
+- ✅ **Relevant**: Applicable to current codebase
+- ✅ **Enforceable**: Can be checked/validated
+- ✅ **Examples included**: Show good vs. bad
+
+**Bad rules are:**
+- ❌ **Vague**: "Write good code"
+- ❌ **Too strict**: No exceptions allowed
+- ❌ **Outdated**: Based on old patterns
+- ❌ **Conflicting**: Contradict other rules
+- ❌ **No examples**: Hard to understand
+
+### Writing Effective Rules
+
+**Structure:**
+```markdown
+- **Action**: [What to do]
+- **Example**: [Code example]
+- **Rationale**: [Why it matters]
+```
+
+**Tone:**
+- Use imperative mood ("Use X", "Avoid Y")
+- Be direct and concise
+- Include context when helpful
+- Use ✅/❌ for examples when appropriate
+
+## 7. Pattern Evolution Tracking
+
+### Document Rule Changes
+
+Keep a changelog of rule updates:
+```markdown
+## Rule Changelog
+
+### 2024-01-15
+- Added: LangChain async pattern rules
+- Updated: Error handling to include request context
+- Removed: Outdated synchronous pattern rules
+
+### 2024-02-01
+- Added: FastMCP integration patterns
+- Refined: Type hint rules for Python 3.11+
+```
+
+### Version Control
+
+- Commit rule changes with descriptive messages
+- Reference issues/PRs that led to rule changes
+- Tag major rule refactors
+- Review rule diffs in PRs
+
+## 8. Collaborative Rule Development
+
+### Team Involvement
+
+**When to involve team:**
+- Adding new major rule sections
+- Changing existing rules significantly
+- Rules affecting multiple team members
+- Rules based on team discussions
+
+**Process:**
+1. Propose rule change in PR or issue
+2. Gather team feedback
+3. Refine based on feedback
+4. Merge when consensus reached
+5. Announce significant changes
+
+### Rule Ownership
+
+- Assign rule sections to domain experts
+- Rotate rule reviewers
+- Encourage contributions from all team members
+- Document who maintains which sections
+
+## 9. Integration with Development Workflow
+
+### Pre-commit Integration
+
+Add rule validation to pre-commit hooks:
+```bash
+# Check if new code follows rules
+# (can be manual review or automated checks)
+```
+
+### CI/CD Integration
+
+- Run linting that enforces some rules
+- Generate reports on rule compliance
+- Flag PRs that violate critical rules
+
+### IDE Integration
+
+- Use Cursor rules (this file)
+- Configure linters to match rules
+- Use code snippets for common patterns
+- Set up formatters to match style rules
+
+## 10. Continuous Improvement Checklist
+
+**Monthly Review:**
+- [ ] Review recent code for new patterns
+- [ ] Check if rules are being followed
+- [ ] Update examples to match current code
+- [ ] Remove outdated rules
+- [ ] Add missing patterns
+
+**Quarterly Review:**
+- [ ] Audit all rules for relevance
+- [ ] Validate with team members
+- [ ] Check alignment with dependencies
+- [ ] Refactor rule structure if needed
+- [ ] Update documentation
+
+**When Adding New Dependencies:**
+- [ ] Review dependency best practices
+- [ ] Add integration patterns
+- [ ] Update related rules
+- [ ] Document breaking changes
+
+**When Refactoring:**
+- [ ] Extract new patterns from refactored code
+- [ ] Update rules to reflect new structure
+- [ ] Document migration patterns
+- [ ] Update examples
+
+---
+
+## Quick Reference: Rule Update Process
+
+1. **Discover** → Identify pattern in codebase
+2. **Validate** → Confirm pattern is worth documenting
+3. **Document** → Write clear rule with examples
+4. **Categorize** → Place in appropriate section
+5. **Review** → Get team feedback
+6. **Merge** → Add to rules file
+7. **Test** → Verify AI follows rule
+8. **Monitor** → Track rule effectiveness
+9. **Refine** → Improve based on feedback
+10. **Maintain** → Keep rules current
