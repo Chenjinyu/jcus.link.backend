@@ -115,9 +115,7 @@ CREATE TABLE profile_data (
   
   -- Timestamps
   created_at TIMESTAMPTZ DEFAULT NOW(),
-  updated_at TIMESTAMPTZ DEFAULT NOW(),
-  
-  UNIQUE(user_id, category, data->>'id') -- Ensure unique entries
+  updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
 -- ============================================================================

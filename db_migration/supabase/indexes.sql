@@ -42,6 +42,11 @@ CREATE INDEX documents_created_at_idx ON documents(created_at DESC);
 CREATE INDEX embeddings_document_id_idx ON embeddings(document_id);
 CREATE INDEX embeddings_model_id_idx ON embeddings(embedding_model_id);
 
+
+-- Create unique index for entries with 'id' in data
+CREATE UNIQUE INDEX profile_data_unique_entry_idx 
+ON profile_data(user_id, category, (data->>'id'))
+WHERE data->>'id' IS NOT NULL;
 -- Profile Data
 CREATE INDEX profile_data_user_id_idx ON profile_data(user_id);
 CREATE INDEX profile_data_category_idx ON profile_data(category);
