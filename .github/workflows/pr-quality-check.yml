@@ -1,0 +1,83 @@
+name: PR Quality Check
+
+on:
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  quality-check:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python 3.13
+      uses: actions/setup-python@v4
+      with:
+        python-version: "3.13"
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v3
+      with:
+        version: "latest"
+
+    - name: Cache dependencies
+      uses: actions/cache@v3
+      with:
+        path: |
+          .venv
+          .pytest_cache
+        key: ${{ runner.os }}-python-3.13-uv-${{ hashFiles('**/pyproject.toml', '**/uv.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-python-3.13-uv-
+
+    - name: Setup development environment
+      run: |
+        uv sync --dev
+        # Ensure we're using the same Python version as local development
+        uv run python --version
+        uv run pyright --version
+
+    - name: Run tests
+      run: |
+        make test
+
+    - name: Run type checking
+      run: |
+        make type-check
+
+    - name: Run linting
+      run: |
+        make lint
+
+    - name: Comment PR with results
+      uses: actions/github-script@v7
+      if: github.event_name == 'pull_request'
+      with:
+        script: |
+          const { data: checks } = await github.rest.checks.listForRef({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            ref: context.payload.pull_request.head.sha,
+          });
+
+          const qualityCheck = checks.check_runs.find(check =>
+            check.name === 'PR Quality Check'
+          );
+
+          if (qualityCheck && qualityCheck.conclusion === 'success') {
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              body: '✅ **Quality Check Passed!**\n\nAll tests, type checking, and linting passed successfully.'
+            });
+          } else if (qualityCheck && qualityCheck.conclusion === 'failure') {
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              body: '❌ **Quality Check Failed!**\n\nPlease check the workflow logs for details on what failed.'
+            });
+          }

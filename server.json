@@ -1,0 +1,22 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-07-09/server.schema.json",
+  "name": "jcus.link/mcp",
+  "description": "An MCP server for analyzing tech job description files.",
+  "status": "active",
+  "repository": {
+    "url": "https://github.com/Chenjinyu/jcus.link.backend",
+    "source": "github"
+  },
+  "version": "0.0.1",
+  "packages": [
+    {
+      "registry_type": "pypi",
+      "registry_base_url": "https://pypi.org",
+      "identifier": "jcus-link-mcp",
+      "version": "0.0.1",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}
