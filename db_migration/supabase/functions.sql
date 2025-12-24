@@ -217,6 +217,212 @@ END;
 $$;
 
 -- ============================================================================
+-- ADD PERSONAL ATTRIBUTE WITH DOCUMENT AND EMBEDDING
+-- ============================================================================
+CREATE OR REPLACE FUNCTION add_personal_attribute(
+  p_user_id TEXT,
+  p_attribute_type TEXT,
+  p_title TEXT,
+  p_description TEXT,
+  p_examples TEXT[] DEFAULT '{}',
+  p_importance_score INTEGER DEFAULT NULL,
+  p_confidence_level INTEGER DEFAULT NULL,
+  p_related_articles UUID[] DEFAULT '{}',
+  p_related_experiences UUID[] DEFAULT '{}',
+  p_embedding_model_name TEXT DEFAULT 'openai-small',
+  p_create_searchable BOOLEAN DEFAULT TRUE
+)
+RETURNS UUID
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  v_content_type_id UUID;
+  v_document_id UUID;
+  v_attribute_id UUID;
+  v_searchable_text TEXT;
+  v_embedding_model_id UUID;
+BEGIN
+  -- Only create document if searchable
+  IF p_create_searchable THEN
+    -- Get content type ID for the attribute type
+    SELECT id INTO v_content_type_id
+    FROM content_types
+    WHERE name = p_attribute_type;
+    
+    IF v_content_type_id IS NULL THEN
+      RAISE EXCEPTION 'Content type % not found. Please add it to content_types table.', p_attribute_type;
+    END IF;
+    
+    -- Build searchable text
+    v_searchable_text := p_title || '. ' || p_description;
+    IF array_length(p_examples, 1) > 0 THEN
+      v_searchable_text := v_searchable_text || '. Examples: ' || array_to_string(p_examples, '. ');
+    END IF;
+    
+    -- Get embedding model ID
+    SELECT id INTO v_embedding_model_id
+    FROM embedding_models
+    WHERE name = p_embedding_model_name AND is_active = TRUE;
+    
+    IF v_embedding_model_id IS NULL THEN
+      RAISE EXCEPTION 'Embedding model % not found or not active', p_embedding_model_name;
+    END IF;
+    
+    -- Insert document
+    INSERT INTO documents (
+      user_id, 
+      content_type_id, 
+      title, 
+      content,
+      metadata
+    ) VALUES (
+      p_user_id, 
+      v_content_type_id, 
+      p_title, 
+      v_searchable_text,
+      jsonb_build_object(
+        'attribute_type', p_attribute_type,
+        'importance_score', p_importance_score,
+        'confidence_level', p_confidence_level
+      )
+    )
+    RETURNING id INTO v_document_id;
+    
+    -- Insert placeholder embedding (to be updated by caller)
+    INSERT INTO embeddings (
+      document_id, 
+      embedding_model_id, 
+      chunk_text,
+      chunk_index,
+      total_chunks
+    ) VALUES (
+      v_document_id, 
+      v_embedding_model_id,
+      v_searchable_text,
+      0,
+      1
+    );
+  END IF;
+  
+  -- Insert personal attribute
+  INSERT INTO personal_attributes (
+    user_id,
+    document_id,
+    attribute_type,
+    title,
+    description,
+    examples,
+    searchable_text,
+    importance_score,
+    confidence_level,
+    related_articles,
+    related_experiences
+  ) VALUES (
+    p_user_id,
+    v_document_id,
+    p_attribute_type,
+    p_title,
+    p_description,
+    p_examples,
+    v_searchable_text,
+    p_importance_score,
+    p_confidence_level,
+    p_related_articles,
+    p_related_experiences
+  )
+  RETURNING id INTO v_attribute_id;
+  
+  RETURN v_attribute_id;
+END;
+$$;
+
+-- ============================================================================
+-- UPDATE PERSONAL ATTRIBUTE (AND OPTIONALLY RECREATE EMBEDDING)
+-- ============================================================================
+CREATE OR REPLACE FUNCTION update_personal_attribute(
+  p_attribute_id UUID,
+  p_title TEXT DEFAULT NULL,
+  p_description TEXT DEFAULT NULL,
+  p_examples TEXT[] DEFAULT NULL,
+  p_importance_score INTEGER DEFAULT NULL,
+  p_confidence_level INTEGER DEFAULT NULL,
+  p_related_articles UUID[] DEFAULT NULL,
+  p_related_experiences UUID[] DEFAULT NULL,
+  p_recreate_embedding BOOLEAN DEFAULT TRUE
+)
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  v_document_id UUID;
+  v_searchable_text TEXT;
+  v_current_attribute RECORD;
+BEGIN
+  -- Get current attribute
+  SELECT * INTO v_current_attribute
+  FROM personal_attributes
+  WHERE id = p_attribute_id;
+  
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Personal attribute % not found', p_attribute_id;
+  END IF;
+  
+  -- Update personal_attributes table
+  UPDATE personal_attributes
+  SET
+    title = COALESCE(p_title, title),
+    description = COALESCE(p_description, description),
+    examples = COALESCE(p_examples, examples),
+    importance_score = COALESCE(p_importance_score, importance_score),
+    confidence_level = COALESCE(p_confidence_level, confidence_level),
+    related_articles = COALESCE(p_related_articles, related_articles),
+    related_experiences = COALESCE(p_related_experiences, related_experiences),
+    updated_at = NOW()
+  WHERE id = p_attribute_id
+  RETURNING document_id INTO v_document_id;
+  
+  -- If has document and should recreate embedding
+  IF v_document_id IS NOT NULL AND p_recreate_embedding THEN
+    -- Get updated values
+    SELECT * INTO v_current_attribute
+    FROM personal_attributes
+    WHERE id = p_attribute_id;
+    
+    -- Build new searchable text
+    v_searchable_text := v_current_attribute.title || '. ' || v_current_attribute.description;
+    IF array_length(v_current_attribute.examples, 1) > 0 THEN
+      v_searchable_text := v_searchable_text || '. Examples: ' || array_to_string(v_current_attribute.examples, '. ');
+    END IF;
+    
+    -- Update document
+    UPDATE documents
+    SET
+      title = v_current_attribute.title,
+      content = v_searchable_text,
+      metadata = jsonb_build_object(
+        'attribute_type', v_current_attribute.attribute_type,
+        'importance_score', v_current_attribute.importance_score,
+        'confidence_level', v_current_attribute.confidence_level
+      ),
+      updated_at = NOW()
+    WHERE id = v_document_id;
+    
+    -- Update embedding chunk_text (embedding vector itself updated by caller)
+    UPDATE embeddings
+    SET chunk_text = v_searchable_text
+    WHERE document_id = v_document_id;
+    
+    -- Update searchable_text in personal_attributes
+    UPDATE personal_attributes
+    SET searchable_text = v_searchable_text
+    WHERE id = p_attribute_id;
+  END IF;
+  
+  RETURN TRUE;
+END;
+$$;
+
+-- ============================================================================
 -- Update triggers to update the updated_at column for all tables
 -- ============================================================================
 CREATE OR REPLACE FUNCTION update_updated_at_column()
