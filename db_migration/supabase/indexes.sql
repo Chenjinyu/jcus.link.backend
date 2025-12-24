@@ -1,30 +1,34 @@
 -- ============================================================================
 -- VECTOR INDEXES (One per embedding dimension)
--- ============================================================================
+-- ivfflat -> inverted File with Flat Compression. 
+-- it's a special index type for vector similarity search provided by the pgvector extension in PostgreSQL.
+-- hnsw - Hierarchical Navigable Small World. It's a graph-based index for vector similarity search.
+-- ivfflat - Fast build, good for most cases.
 
--- For OpenAI text-embedding-3-small (1536 dimensions)
+-- ============================================================================
+-- Step 1: Get the model IDs
+SELECT id, name, dimensions FROM embedding_models;
+
+-- Step 2: Use the actual UUIDs in the index
+-- Replace 'your-model-id-here' with actual UUID from step 1
+
+-- For 768 dimensions (Ollama)
+CREATE INDEX embeddings_768_idx ON embeddings 
+USING ivfflat (embedding vector_cosine_ops)
+WITH (lists = 50)
+WHERE embedding_model_id = 'abc-123-def-456'::UUID;  -- ← Actual UUID
+
+-- For 1536 dimensions (OpenAI small)
 CREATE INDEX embeddings_1536_idx ON embeddings 
 USING ivfflat (embedding vector_cosine_ops)
 WITH (lists = 100)
-WHERE embedding_model_id IN (
-  SELECT id FROM embedding_models WHERE dimensions = 1536
-);
+WHERE embedding_model_id = 'xyz-789-ghi-012'::UUID;  -- ← Actual UUID
 
--- For OpenAI text-embedding-3-large (3072 dimensions)
+-- For 3072 dimensions (OpenAI large)
 CREATE INDEX embeddings_3072_idx ON embeddings 
 USING ivfflat (embedding vector_cosine_ops)
-WITH (lists = 100)
-WHERE embedding_model_id IN (
-  SELECT id FROM embedding_models WHERE dimensions = 3072
-);
-
--- For Ollama nomic-embed-text (768 dimensions)
-CREATE INDEX embeddings_768_idx ON embeddings 
-USING ivfflat (embedding vector_cosine_ops)
-WITH (lists = 100)
-WHERE embedding_model_id IN (
-  SELECT id FROM embedding_models WHERE dimensions = 768
-);
+WITH (lists = 150)
+WHERE embedding_model_id = 'uvw-345-rst-678'::UUID;  -- ← Actual UUID
 
 -- ============================================================================
 -- REGULAR INDEXES
@@ -62,3 +66,4 @@ CREATE INDEX articles_tags_idx ON articles USING GIN(tags);
 -- Personal Attributes
 CREATE INDEX personal_attributes_user_id_idx ON personal_attributes(user_id);
 CREATE INDEX personal_attributes_type_idx ON personal_attributes(attribute_type);
+CREATE INDEX personal_attributes_document_id_idx ON personal_attributes(document_id);

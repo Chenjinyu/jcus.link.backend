@@ -30,7 +30,7 @@ CREATE TABLE content_types (
 
 -- ============================================================================
 -- DOCUMENTS TABLE (Main content storage)
--- Stores all your content with metadata
+-- Stores all your content with metadata - the Central Hub
 -- ============================================================================
 CREATE TABLE documents (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -94,7 +94,8 @@ CREATE TABLE embeddings (
 CREATE TABLE profile_data (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   user_id TEXT NOT NULL,
-  
+  -- document_id could be NULL
+  document_id UUID REFERENCES documents(id) ON DELETE CASCADE,
   -- Category: 'work_experience', 'education', 'certification', 'skill', 'value', 'goal'
   category TEXT NOT NULL,
   
@@ -108,11 +109,9 @@ CREATE TABLE profile_data (
   display_order INTEGER,
   is_featured BOOLEAN DEFAULT FALSE,
   is_current BOOLEAN DEFAULT TRUE, -- For work experience
-  
   -- Time ranges
   start_date DATE,
   end_date DATE,
-  
   -- Timestamps
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
@@ -164,6 +163,9 @@ CREATE TABLE personal_attributes (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   user_id TEXT NOT NULL,
   
+  -- Link to documents for vector search
+  document_id UUID REFERENCES documents(id) ON DELETE CASCADE,
+  
   -- Type: 'soft_skill', 'value', 'worldview', 'aspiration', 'principle'
   attribute_type TEXT NOT NULL,
   
@@ -171,6 +173,9 @@ CREATE TABLE personal_attributes (
   title TEXT NOT NULL,
   description TEXT NOT NULL,
   examples TEXT[], -- Real-world examples
+  
+  -- Searchable text (generated from title + description + examples)
+  searchable_text TEXT,
   
   -- Importance/Confidence
   importance_score INTEGER CHECK (importance_score BETWEEN 1 AND 10),
