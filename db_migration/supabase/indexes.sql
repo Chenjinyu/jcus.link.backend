@@ -4,7 +4,15 @@
 -- it's a special index type for vector similarity search provided by the pgvector extension in PostgreSQL.
 -- hnsw - Hierarchical Navigable Small World. It's a graph-based index for vector similarity search.
 -- ivfflat - Fast build, good for most cases.
-
+----------------------------------------------------------------------------
+-- | Index Type         | Use Case                                         |
+-- | GIN                | Full-Text Search, JSONB containment.             |
+-- | GiST               | Geospatial Data, Range Queries                   |
+-- | BRIN               | Very Large Tables with Natural Order             |
+-- | ivfflat            | Vector Similarity Search (Large Datasets)        |
+-- | hnsw               | Vector Similarity Search (High-Dimensional Data).|
+-- | btree(clower(col)) | Case-Insensitive Text Search                     |
+----------------------------------------------------------------------------
 -- ============================================================================
 -- Step 1: Get the model IDs
 SELECT id, name, dimensions FROM embedding_models;
@@ -12,7 +20,7 @@ SELECT id, name, dimensions FROM embedding_models;
 -- Step 2: Use the actual UUIDs in the index
 -- Replace 'your-model-id-here' with actual UUID from step 1
 
--- Create HNSW indexes (work with vector without dimensions)
+-- Create HNSW type of indexes (work with vector without dimensions)
 -- For 768 dimensions (Ollama nomic-embed-text)
 CREATE INDEX embeddings_768_idx ON embeddings 
 USING hnsw ((embedding::vector(768)) vector_cosine_ops)
@@ -33,39 +41,53 @@ WITH (m = 16, ef_construction = 64)
 WHERE embedding_model_id = '8946dc3d-f227-4d04-916f-be1bafaf66ea'::UUID;
 
 -- ============================================================================
--- REGULAR INDEXES
+-- REGULAR INDEXES, Postgres creates the B-Tree index by default.
 -- ============================================================================
 
 -- Documents
+DROP INDEX IF EXISTS documents_user_id_idx;
+DROP INDEX IF EXISTS documents_current_idx;
+DROP INDEX IF EXISTS documents_tags_idx;
 CREATE INDEX documents_user_id_idx ON documents(user_id);
-CREATE INDEX documents_content_type_idx ON documents(content_type_id);
-CREATE INDEX documents_status_idx ON documents(status) WHERE deleted_at IS NULL;
 CREATE INDEX documents_current_idx ON documents(is_current) WHERE is_current = TRUE;
 CREATE INDEX documents_tags_idx ON documents USING GIN(tags);
-CREATE INDEX documents_created_at_idx ON documents(created_at DESC);
 
 -- Embeddings
+DROP INDEX IF EXISTS embeddings_document_id_idx;
+DROP INDEX IF EXISTS embeddings_model_id_idx;
 CREATE INDEX embeddings_document_id_idx ON embeddings(document_id);
 CREATE INDEX embeddings_model_id_idx ON embeddings(embedding_model_id);
 
 
 -- Create unique index for entries with 'id' in data
+DROP INDEX IF EXISTS profile_data_unique_entry_idx;
 CREATE UNIQUE INDEX profile_data_unique_entry_idx 
 ON profile_data(user_id, category, (data->>'id'))
 WHERE data->>'id' IS NOT NULL;
 -- Profile Data
+DROP INDEX IF EXISTS profile_data_user_id_idx;
+DROP INDEX IF EXISTS profile_data_category_idx;
+DROP INDEX IF EXISTS profile_data_document_id_idx;
 CREATE INDEX profile_data_user_id_idx ON profile_data(user_id);
 CREATE INDEX profile_data_category_idx ON profile_data(category);
-CREATE INDEX profile_data_is_current_idx ON profile_data(is_current) WHERE is_current = TRUE;
+CREATE INDEX profile_data_document_id_idx ON profile_data(document_id);
 
 -- Articles
+DROP INDEX IF EXISTS articles_user_id_idx;
+DROP INDEX IF EXISTS articles_status_idx;
+DROP INDEX IF EXISTS articles_document_id_idx;
+DROP INDEX IF EXISTS articles_slug_idx;
+DROP INDEX IF EXISTS articles_tags_idx;
 CREATE INDEX articles_user_id_idx ON articles(user_id);
 CREATE INDEX articles_status_idx ON articles(status);
-CREATE INDEX articles_published_at_idx ON articles(published_at DESC);
+CREATE INDEX articles_document_id_idx ON articles(document_id);
 CREATE INDEX articles_slug_idx ON articles(slug);
 CREATE INDEX articles_tags_idx ON articles USING GIN(tags);
 
 -- Personal Attributes
+DROP INDEX IF EXISTS personal_attributes_user_id_idx;
+DROP INDEX IF EXISTS personal_attributes_type_idx;
+DROP INDEX IF EXISTS personal_attributes_document_id_idx;
 CREATE INDEX personal_attributes_user_id_idx ON personal_attributes(user_id);
 CREATE INDEX personal_attributes_type_idx ON personal_attributes(attribute_type);
 CREATE INDEX personal_attributes_document_id_idx ON personal_attributes(document_id);

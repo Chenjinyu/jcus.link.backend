@@ -1,5 +1,5 @@
 -- ============================================================================
--- EMBEDDING MODELS TABLE
+-- 1. EMBEDDING_MODELS (Reference data)
 -- Tracks different embedding models and their configurations
 -- ============================================================================
 CREATE TABLE embedding_models (
@@ -11,31 +11,17 @@ CREATE TABLE embedding_models (
   is_active BOOLEAN DEFAULT TRUE,
   is_local BOOLEAN DEFAULT FALSE, -- TRUE for ollama models
   cost_per_token DECIMAL(10, 8), -- Track costs
-  metadata JSONB, -- Additional config
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- ============================================================================
--- CONTENT TYPES TABLE
--- Categories for different types of content
--- ============================================================================
-CREATE TABLE content_types (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  name TEXT NOT NULL UNIQUE, -- 'profile', 'article', 'work_experience', etc.
-  description TEXT,
-  schema_definition JSONB, -- Define expected fields for this content type
-  created_at TIMESTAMPTZ DEFAULT NOW()
-);
 
 -- ============================================================================
--- DOCUMENTS TABLE (Main content storage)
--- Stores all your content with metadata - the Central Hub
+-- 2. DOCUMENTS (Searchable text only - for embeddings)
 -- ============================================================================
 CREATE TABLE documents (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   user_id TEXT NOT NULL, -- Your user identifier
-  content_type_id UUID REFERENCES content_types(id),
   
   -- Content
   title TEXT,
@@ -51,18 +37,16 @@ CREATE TABLE documents (
   is_current BOOLEAN DEFAULT TRUE,
   parent_id UUID REFERENCES documents(id), -- For version history
   
-  -- Status
-  status TEXT DEFAULT 'published', -- 'draft', 'published', 'archived'
-  published_at TIMESTAMPTZ,
+  -- Soft delete
+  deleted_at TIMESTAMPTZ,
   
   -- Timestamps
   created_at TIMESTAMPTZ DEFAULT NOW(),
-  updated_at TIMESTAMPTZ DEFAULT NOW(),
-  deleted_at TIMESTAMPTZ -- Soft delete
+  updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
 -- ============================================================================
--- EMBEDDINGS TABLE (Vector storage)
+-- 3. EMBEDDINGS TABLE (Vector storage)
 -- Multi-model vector storage with model tracking
 -- ============================================================================
 CREATE TABLE embeddings (
@@ -71,15 +55,12 @@ CREATE TABLE embeddings (
   embedding_model_id UUID NOT NULL REFERENCES embedding_models(id),
   
   -- The actual vector (dimension varies by model)
-  embedding vector, -- Can be 768, 1536, 3072, etc.
+  embedding vector, -- Can be 768, 1536, etc. 3072 is out the 2000 limitation in pyvector.
   
   -- Metadata
   chunk_index INTEGER DEFAULT 0, -- For chunked documents
   total_chunks INTEGER DEFAULT 1,
   chunk_text TEXT, -- Store the specific text that was embedded
-  
-  -- Performance tracking
-  embedding_time_ms INTEGER, -- Track how long embedding took
   
   created_at TIMESTAMPTZ DEFAULT NOW(),
   
@@ -88,53 +69,68 @@ CREATE TABLE embeddings (
 );
 
 -- ============================================================================
--- PROFILE DATA TABLE
+-- 4. PROFILE DATA TABLE
 -- Structured storage for LinkedIn-style profile information
 -- ============================================================================
 CREATE TABLE profile_data (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   user_id TEXT NOT NULL,
-  -- document_id could be NULL
-  document_id UUID REFERENCES documents(id) ON DELETE CASCADE,
+  
+  -- Optional embedding search, Keep the child rows, but remove the reference
+  document_id UUID REFERENCES documents(id) ON DELETE SET NULL,
   -- Category: 'work_experience', 'education', 'certification', 'skill', 'value', 'goal'
-  category TEXT NOT NULL,
+  category TEXT NOT NULL CHECK (
+    category IN (
+      'work_experience', 
+      'education', 
+      'certification', 
+      'skill', 
+      'value', 
+      'goal',
+      'project',
+      'volunteering',
+      'event'
+    )
+  ),
   
   -- Structured data
   data JSONB NOT NULL, -- Flexible schema per category
   
-  -- Searchable summary text
-  searchable_text TEXT, -- Flattened text for embedding
-  
-  -- Ordering and display
-  display_order INTEGER,
-  is_featured BOOLEAN DEFAULT FALSE,
-  is_current BOOLEAN DEFAULT TRUE, -- For work experience
-  -- Time ranges
+  -- Time range (for experiences)
+  is_current BOOLEAN DEFAULT FALSE,
   start_date DATE,
   end_date DATE,
-  -- Timestamps
+  
+  -- Display
+  display_order INTEGER,
+  is_featured BOOLEAN DEFAULT FALSE,
+  
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
 -- ============================================================================
--- ARTICLES TABLE
+-- 5. ARTICLES TABLE
 -- Specialized table for your articles
 -- ============================================================================
 CREATE TABLE articles (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   user_id TEXT NOT NULL,
+
+  -- Always has embedding. Delete the child rows if article is deleted.
   document_id UUID REFERENCES documents(id) ON DELETE CASCADE,
   
   -- Article metadata
-  slug TEXT UNIQUE, -- URL-friendly identifier
+  slug TEXT UNIQUE NOT NULL, -- URL-friendly identifier
   title TEXT NOT NULL,
   subtitle TEXT,
   content TEXT NOT NULL,
   excerpt TEXT,
   
   -- Publishing
-  status TEXT DEFAULT 'draft', -- 'draft', 'published', 'archived'
+  status TEXT DEFAULT 'draft' CHECK (
+    status IN ('draft', 'published', 'archived')
+  ),
   published_at TIMESTAMPTZ,
   
   -- SEO
@@ -156,7 +152,7 @@ CREATE TABLE articles (
 );
 
 -- ============================================================================
--- SOFT SKILLS & VALUES TABLE
+-- 6. PERSONAL_ATTRIBUTES - SOFT SKILLS & VALUES TABLE
 -- Store personal philosophy, soft skills, aspirations
 -- ============================================================================
 CREATE TABLE personal_attributes (
@@ -164,10 +160,18 @@ CREATE TABLE personal_attributes (
   user_id TEXT NOT NULL,
   
   -- Link to documents for vector search
-  document_id UUID REFERENCES documents(id) ON DELETE CASCADE,
+  document_id UUID REFERENCES documents(id) ON DELETE SET NULL,
   
   -- Type: 'soft_skill', 'value', 'worldview', 'aspiration', 'principle'
-  attribute_type TEXT NOT NULL,
+  attribute_type TEXT NOT NULL CHECK (
+    attribute_type IN (
+      'soft_skill', 
+      'value', 
+      'worldview', 
+      'aspiration', 
+      'principle'
+    )
+  ),
   
   -- Content
   title TEXT NOT NULL,
