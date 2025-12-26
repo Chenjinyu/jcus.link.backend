@@ -5,7 +5,7 @@
 CREATE TABLE embedding_models (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   name TEXT NOT NULL UNIQUE, -- 'openai-small', 'openai-large', 'ollama-local'
-  provider TEXT NOT NULL, -- 'openai', 'ollama', 'cohere'
+  provider TEXT NOT NULL, -- 'openai', 'ollama', 'cohere', 'google'
   model_identifier TEXT NOT NULL, -- 'text-embedding-3-small', 'nomic-embed-text'
   dimensions INTEGER NOT NULL, -- 1536, 3072, 768, etc.
   is_active BOOLEAN DEFAULT TRUE,
