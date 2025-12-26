@@ -12,23 +12,25 @@ SELECT id, name, dimensions FROM embedding_models;
 -- Step 2: Use the actual UUIDs in the index
 -- Replace 'your-model-id-here' with actual UUID from step 1
 
--- For 768 dimensions (Ollama)
+-- Create HNSW indexes (work with vector without dimensions)
+-- For 768 dimensions (Ollama nomic-embed-text)
 CREATE INDEX embeddings_768_idx ON embeddings 
-USING ivfflat (embedding vector_cosine_ops)
-WITH (lists = 50)
-WHERE embedding_model_id = 'abc-123-def-456'::UUID;  -- ← Actual UUID
+USING hnsw ((embedding::vector(768)) vector_cosine_ops)
+WITH (m = 16, ef_construction = 64)
+WHERE embedding_model_id = '0bf77eef-8a60-433e-85e8-0e5ed9fd12a7'::UUID;
 
--- For 1536 dimensions (OpenAI small)
+-- For 1536 dimensions (OpenAI text-embedding-3-small)
 CREATE INDEX embeddings_1536_idx ON embeddings 
-USING ivfflat (embedding vector_cosine_ops)
-WITH (lists = 100)
-WHERE embedding_model_id = 'xyz-789-ghi-012'::UUID;  -- ← Actual UUID
+USING hnsw ((embedding::vector(1536)) vector_cosine_ops)
+WITH (m = 16, ef_construction = 64)
+WHERE embedding_model_id = 'e21adccd-dc5e-4e1f-a0d6-ac137a93607c'::UUID;
 
--- For 3072 dimensions (OpenAI large)
+-- ⚠️ BOTH HNSW and ivfflat have a 2000-dimension limit in pgvector. its a hard limitation. CANNOT create index for dimension 3072
+-- For 3072 dimensions (OpenAI text-embedding-3-large)
 CREATE INDEX embeddings_3072_idx ON embeddings 
-USING ivfflat (embedding vector_cosine_ops)
-WITH (lists = 150)
-WHERE embedding_model_id = 'uvw-345-rst-678'::UUID;  -- ← Actual UUID
+USING hnsw ((embedding::vector(3072)) vector_cosine_ops)
+WITH (m = 16, ef_construction = 64)
+WHERE embedding_model_id = '8946dc3d-f227-4d04-916f-be1bafaf66ea'::UUID;
 
 -- ============================================================================
 -- REGULAR INDEXES

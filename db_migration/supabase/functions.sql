@@ -1,6 +1,8 @@
 -- ============================================================================
 -- Search stored function that returns article or profile info
 -- ============================================================================
+DROP FUNCTION IF EXISTS search_all_content(vector, text, float, int);
+
 CREATE OR REPLACE FUNCTION search_all_content(
   query_embedding vector,
   user_id_filter TEXT,
@@ -20,6 +22,7 @@ RETURNS TABLE (
   similarity FLOAT
 )
 LANGUAGE plpgsql
+SET search_path = public  -- explicitly set search path to prevent search path hijacking attachs.
 AS $$
 BEGIN
   RETURN QUERY
@@ -48,6 +51,8 @@ $$;
 -- ============================================================================
 -- SEARCH DOCUMENTS WITH ARTICLE, PROFILE DATA, AND PERSONAL ATTRIBUTES
 -- ============================================================================
+DROP FUNCTION IF EXISTS search_documents(vector, uuid, float, int, text, text[], text[]);
+
 CREATE OR REPLACE FUNCTION search_documents(
   query_embedding vector,
   model_id UUID,
@@ -76,6 +81,7 @@ RETURNS TABLE (
   created_at TIMESTAMPTZ
 )
 LANGUAGE plpgsql
+SET search_path = public
 AS $$
 BEGIN
   RETURN QUERY
@@ -124,6 +130,8 @@ $$;
 -- ============================================================================
 -- Upsert stored function that inserts a document with embeddings
 -- ============================================================================
+DROP FUNCTION IF EXISTS upsert_document_with_embedding(text, text, text, text, jsonb, text[], text, jsonb);
+
 CREATE OR REPLACE FUNCTION upsert_document_with_embedding(
   p_user_id TEXT,
   p_content_type TEXT,
@@ -136,6 +144,7 @@ CREATE OR REPLACE FUNCTION upsert_document_with_embedding(
 )
 RETURNS UUID
 LANGUAGE plpgsql
+SET search_path = public
 AS $$
 DECLARE
   v_content_type_id UUID;
@@ -219,6 +228,8 @@ $$;
 -- ============================================================================
 -- ADD PERSONAL ATTRIBUTE WITH DOCUMENT AND EMBEDDING
 -- ============================================================================
+DROP FUNCTION IF EXISTS add_personal_attribute(text, text, text, text, text[], int, int, uuid[], uuid[], text, boolean);
+
 CREATE OR REPLACE FUNCTION add_personal_attribute(
   p_user_id TEXT,
   p_attribute_type TEXT,
@@ -234,6 +245,7 @@ CREATE OR REPLACE FUNCTION add_personal_attribute(
 )
 RETURNS UUID
 LANGUAGE plpgsql
+SET search_path = public
 AS $$
 DECLARE
   v_content_type_id UUID;
@@ -339,6 +351,8 @@ $$;
 -- ============================================================================
 -- UPDATE PERSONAL ATTRIBUTE (AND OPTIONALLY RECREATE EMBEDDING)
 -- ============================================================================
+DROP FUNCTION IF EXISTS update_personal_attribute(uuid, text, text, text[], int, int, uuid[], uuid[], boolean);
+
 CREATE OR REPLACE FUNCTION update_personal_attribute(
   p_attribute_id UUID,
   p_title TEXT DEFAULT NULL,
@@ -352,6 +366,7 @@ CREATE OR REPLACE FUNCTION update_personal_attribute(
 )
 RETURNS BOOLEAN
 LANGUAGE plpgsql
+SET search_path = public
 AS $$
 DECLARE
   v_document_id UUID;
@@ -423,8 +438,64 @@ END;
 $$;
 
 -- ============================================================================
+-- Create vector indexes for active embedding models
+-- ============================================================================
+DROP FUNCTION IF EXISTS create_vector_indexes();
+
+CREATE OR REPLACE FUNCTION create_vector_indexes()
+RETURNS TEXT
+LANGUAGE plpgsql
+SET search_path = public  
+AS $$
+DECLARE 
+    model_record RECORD; 
+    index_name TEXT; 
+    lists_count INTEGER;
+    result_message TEXT := '';
+BEGIN 
+    FOR model_record IN 
+        SELECT id, name, dimensions 
+        FROM embedding_models 
+        WHERE is_active = TRUE 
+    LOOP 
+        index_name := 'embeddings_' || replace(model_record.name, '-', '_') || '_idx';
+        lists_count := GREATEST(10, FLOOR(SQRT(model_record.dimensions)));
+        
+        EXECUTE format(
+            'CREATE INDEX IF NOT EXISTS %I ON embeddings 
+             USING ivfflat (embedding vector_cosine_ops)
+             WITH (lists = %s)
+             WHERE embedding_model_id = %L',
+            index_name,
+            lists_count,
+            model_record.id
+        );
+        
+        result_message := result_message || format(
+            'Created index %s for model %s (%s dimensions, %s lists)' || E'\n',
+            index_name,
+            model_record.name,
+            model_record.dimensions,
+            lists_count
+        );
+    END LOOP;
+    
+    RETURN result_message;
+END;
+$$;
+
+-- ============================================================================
 -- Update triggers to update the updated_at column for all tables
 -- ============================================================================
+-- Drop triggers if they exist (to avoid errors on re-run)
+DROP TRIGGER IF EXISTS update_documents_updated_at ON documents;
+DROP TRIGGER IF EXISTS update_profile_data_updated_at ON profile_data;
+DROP TRIGGER IF EXISTS update_articles_updated_at ON articles;
+DROP TRIGGER IF EXISTS update_embedding_models_updated_at ON embedding_models;
+DROP TRIGGER IF EXISTS update_personal_attributes_updated_at ON personal_attributes;
+
+DROP FUNCTION IF EXISTS update_updated_at_column();
+
 CREATE OR REPLACE FUNCTION update_updated_at_column()
 RETURNS TRIGGER AS $$
 BEGIN
@@ -432,13 +503,6 @@ BEGIN
   RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
-
--- Drop triggers if they exist (to avoid errors on re-run)
-DROP TRIGGER IF EXISTS update_documents_updated_at ON documents;
-DROP TRIGGER IF EXISTS update_profile_data_updated_at ON profile_data;
-DROP TRIGGER IF EXISTS update_articles_updated_at ON articles;
-DROP TRIGGER IF EXISTS update_embedding_models_updated_at ON embedding_models;
-DROP TRIGGER IF EXISTS update_personal_attributes_updated_at ON personal_attributes;
 
 -- Create triggers
 CREATE TRIGGER update_documents_updated_at
@@ -466,7 +530,3 @@ CREATE TRIGGER update_personal_attributes_updated_at
   FOR EACH ROW
   EXECUTE FUNCTION update_updated_at_column();
 
-CREATE TRIGGER update_personal_attributes_updated_at
-  BEFORE UPDATE ON personal_attributes
-  FOR EACH ROW
-  EXECUTE FUNCTION update_updated_at_column();

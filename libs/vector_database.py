@@ -56,7 +56,7 @@ class VectorDatabase:
     async def create_embedding(
         self, 
         text: str, 
-        model_name: str = 'openai-small'
+        model_name: str = 'nomic-embed-text'  # 768 dimenstions
     ) -> List[float]:
         """Create embedding using specified model"""
         model = self._models_cache.get(model_name)
@@ -764,7 +764,7 @@ class VectorDatabase:
         new_content: str,
         content_type: Optional[str] = None,
         similarity_threshold: float = 0.85,
-        model_name: str = 'openai-small'
+        model_name: str = 'nomic-embed-text'  # 768 dimenstions
     ) -> Dict[str, any]:
         """
         Intelligently find and update documents based on semantic similarity.
@@ -900,7 +900,7 @@ class VectorDatabase:
         self,
         user_id: str,
         conversation_context: str,
-        model_name: str = 'openai-small'
+        model_name: str = 'nomic-embed-text'  # 768 dimenstions
     ) -> Dict:
         """
         Use AI to understand what the user wants to update and apply changes.
@@ -1011,7 +1011,7 @@ class VectorDatabase:
         self,
         user_id: str,
         new_information: str,
-        model_name: str = 'openai-small'
+        model_name: str = 'nomic-embed-text'  # 768 dimenstions
     ) -> Dict:
         """
         Detect what information changed by comparing with existing content.
@@ -1156,12 +1156,11 @@ class VectorDatabase:
     # ========================================================================
     # BATCH UPDATE WITH CONFIRMATION
     # ========================================================================
-    
     async def propose_updates(
         self,
         user_id: str,
         update_request: str,
-        model_name: str = 'openai-small'
+        model_name: str = 'nomic-embed-text'  # 768 dimenstions
     ) -> List[Dict]:
         """
         Find potential updates but don't apply them yet.
@@ -1252,7 +1251,7 @@ class VectorDatabase:
         tags: Optional[List[str]] = None,
         threshold: float = 0.7,
         limit: int = 10,
-        model_name: str = 'openai-small'
+        model_name: str = 'nomic-embed-text'  # 768 dimenstions
     ) -> List[Dict]:
         """
         Search across all content using vector similarity.
