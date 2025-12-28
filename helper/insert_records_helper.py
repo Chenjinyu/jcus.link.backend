@@ -23,32 +23,20 @@ from libs.vector_database import VectorDatabase
 
 
 # ============================================================================
-# CONFIGURATION
-# ============================================================================
-
-# Load from environment variables or set directly
-SUPABASE_URL = os.environ.get("SUPABASE_URL", "your-supabase-url")
-SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "your-supabase-key")
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", None)  # Optional if using Ollama
-OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
-
-# Test user ID (replace with actual user ID)
-JC_USER_ID = "jinyu.chen"
-
-
-# ============================================================================
 # HELPER FUNCTIONS
 # ============================================================================
 
-def create_db() -> VectorDatabase:
+def create_db(
+    supabase_url,
+    supabase_key,
+    ollama_url
+    ) -> VectorDatabase:
     """Create and initialize VectorDatabase instance"""
     return VectorDatabase(
-        supabase_url=SUPABASE_URL,
-        supabase_key=SUPABASE_KEY,
-        openai_key=OPENAI_API_KEY,
-        ollama_url=OLLAMA_URL
+        supabase_url,
+        supabase_key,
+        ollama_url
     )
-
 
 async def insert_document_example(db: VectorDatabase, user_id: str):
     """Example: Insert a simple document"""
@@ -56,7 +44,6 @@ async def insert_document_example(db: VectorDatabase, user_id: str):
     
     document_id = await db.add_document(
         user_id=user_id,
-        content_type="article",  # Must exist in content_types table
         title="Introduction to Python",
         content="""
         Python is a high-level programming language known for its simplicity and readability.

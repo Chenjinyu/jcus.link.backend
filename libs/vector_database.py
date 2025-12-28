@@ -7,7 +7,7 @@ from datetime import datetime
 import httpx
 import json
 try:
-    import google.generativeai as genai
+    import google as genai
     GOOGLE_AVAILABLE = True
 except ImportError:
     GOOGLE_AVAILABLE = False
