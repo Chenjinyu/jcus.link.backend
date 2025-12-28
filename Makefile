@@ -1,6 +1,6 @@
-.PHONY: install, test, format, lint, clean
+.PHONY: install test format lint clean
 
-install
+install:
 	uv sync
 
 test:

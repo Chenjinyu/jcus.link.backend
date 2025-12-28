@@ -33,9 +33,9 @@ def create_db(
     ) -> VectorDatabase:
     """Create and initialize VectorDatabase instance"""
     return VectorDatabase(
-        supabase_url,
-        supabase_key,
-        ollama_url
+        supabase_url=supabase_url,
+        supabase_key=supabase_key,
+        ollama_url=ollama_url
     )
 
 async def insert_document_example(db: VectorDatabase, user_id: str):

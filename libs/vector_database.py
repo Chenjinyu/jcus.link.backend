@@ -6,6 +6,7 @@ import openai
 from datetime import datetime
 import httpx
 import json
+import asyncpg
 try:
     import google as genai
     GOOGLE_AVAILABLE = True
@@ -21,6 +22,7 @@ class EmbeddingModel:
     model_identifier: str
     dimensions: int
     is_local: bool
+    is_available: bool = False
     cost_per_token: Optional[float] = None
 
 class VectorDatabase:
@@ -32,32 +34,63 @@ class VectorDatabase:
     """
     
     def __init__(
-        self, 
-        supabase_url: str, 
-        supabase_key: str, 
+        self,
+        supabase_url: str,
+        supabase_key: str,
+        postgres_url: str,
         openai_key: Optional[str] = None,
         google_key: Optional[str] = None,
         ollama_url: str = 'http://localhost:11434'
     ):
         self.supabase: Client = create_client(supabase_url, supabase_key)
-        
+
+        # PostgreSQL connection pool for transactions
+        self.postgres_url = postgres_url
+        self.pg_pool: Optional[asyncpg.Pool] = None
+
         # Initialize AI providers
         self.openai_client = openai.OpenAI(api_key=openai_key) if openai_key else None
         self.ollama_url = ollama_url
-        
+
         if google_key and GOOGLE_AVAILABLE:
             genai.configure(api_key=google_key)
             self.google_client = genai
         else:
             self.google_client = None
-        
+
         self._models_cache: Dict[str, EmbeddingModel] = {}
         self._load_models()
+
+    async def init_pool(self):
+        """Initialize PostgreSQL connection pool. Call this before using transaction methods."""
+        if not self.pg_pool:
+            self.pg_pool = await asyncpg.create_pool(
+                self.postgres_url,
+                min_size=2,
+                max_size=10,
+                command_timeout=60
+            )
+
+    async def close_pool(self):
+        """Close PostgreSQL connection pool."""
+        if self.pg_pool:
+            await self.pg_pool.close()
+            self.pg_pool = None
     
     def _load_models(self):
         """Load embedding models from database"""
         result = self.supabase.table('embedding_models').select('*').eq('is_active', True).execute()
         for model_data in result.data:
+            provider = model_data['provider']
+            if provider not in ['openai', 'ollama', 'google']:
+                raise ValueError(f"Unsupported provider: {provider}")
+            if provider == 'openai' and self.openai_client:
+                model_data['is_available'] = True
+            if provider == 'ollama' and self.ollama_url:
+                model_data['is_available'] = True
+            if provider == 'google' and self.google_client:
+                model_data['is_available'] = True
+                    
             self._models_cache[model_data['name']] = EmbeddingModel(
                 id=model_data['id'],
                 name=model_data['name'],
@@ -65,6 +98,7 @@ class VectorDatabase:
                 model_identifier=model_data['model_identifier'],
                 dimensions=model_data['dimensions'],
                 is_local=model_data['is_local'],
+                is_available=model_data.get('is_available', False),
                 cost_per_token=model_data.get('cost_per_token')
             )
     
@@ -84,6 +118,9 @@ class VectorDatabase:
         model = self._models_cache.get(model_name)
         if not model:
             raise ValueError(f"Model {model_name} not found or not active")
+        
+        if model.is_available == False:
+            raise ValueError(f"Model {model_name} is not available. Check provider configuration.")
         
         if model.provider == 'openai':
             return await self._create_openai_embedding(text, model)
@@ -147,41 +184,48 @@ class VectorDatabase:
         chunk_overlap: int = 50
     ) -> str:
         """
-        Add document with embeddings from multiple models.
+        Add document with embeddings from multiple models using database transaction.
         Automatically chunks long content.
+        If any error occurs, entire operation is rolled back.
         """
+        if not self.pg_pool:
+            raise RuntimeError("PostgreSQL pool not initialized. Call init_pool() first.")
+
         if model_names is None:
             model_names = list(self._models_cache.keys())
-        
-        doc_result = self.supabase.table('documents').insert({
-            'user_id': user_id,
-            'title': title,
-            'content': content,
-            'metadata': metadata or {},
-            'tags': tags or []
-        }).execute()
-        
-        document_id = doc_result.data[0]['id']
-        
+
         chunks = self._chunk_text(content, chunk_size, chunk_overlap)
         total_chunks = len(chunks)
-        
-        for model_name in model_names:
-            model = self._models_cache[model_name]
-            
-            for chunk_index, chunk_text in enumerate(chunks):
-                embedding = await self.create_embedding(chunk_text, model_name)
-                
-                self.supabase.table('embeddings').insert({
-                    'document_id': document_id,
-                    'embedding_model_id': model.id,
-                    'embedding': embedding,
-                    'chunk_text': chunk_text,
-                    'chunk_index': chunk_index,
-                    'total_chunks': total_chunks
-                }).execute()
-        
-        return document_id
+
+        async with self.pg_pool.acquire() as conn:
+            async with conn.transaction():
+                # Insert document
+                document_id = await conn.fetchval(
+                    """
+                    INSERT INTO documents (user_id, title, content, metadata, tags)
+                    VALUES ($1, $2, $3, $4, $5)
+                    RETURNING id
+                    """,
+                    user_id, title, content, json.dumps(metadata or {}), tags or []
+                )
+
+                # Create and insert embeddings for each model
+                for model_name in model_names:
+                    model = self._models_cache[model_name]
+
+                    for chunk_index, chunk_text in enumerate(chunks):
+                        embedding = await self.create_embedding(chunk_text, model_name)
+
+                        await conn.execute(
+                            """
+                            INSERT INTO embeddings
+                            (document_id, embedding_model_id, embedding, chunk_text, chunk_index, total_chunks)
+                            VALUES ($1, $2, $3, $4, $5, $6)
+                            """,
+                            document_id, model.id, embedding, chunk_text, chunk_index, total_chunks
+                        )
+
+                return document_id
     
     async def update_document(
         self,
@@ -194,51 +238,89 @@ class VectorDatabase:
         chunk_size: int = 500,
         chunk_overlap: int = 50
     ) -> bool:
-        """Update document and optionally recreate embeddings"""
-        update_data = {}
-        if title is not None:
-            update_data['title'] = title
-        if content is not None:
-            update_data['content'] = content
-        if metadata is not None:
-            update_data['metadata'] = metadata
-        if tags is not None:
-            update_data['tags'] = tags
-        
-        self.supabase.table('documents').update(update_data).eq('id', document_id).execute()
-        
-        if recreate_embeddings and content is not None:
-            existing = self.supabase.table('embeddings').select(
-                'embedding_model_id'
-            ).eq('document_id', document_id).execute()
-            
-            model_ids = list(set([e['embedding_model_id'] for e in existing.data]))
-            
-            self.supabase.table('embeddings').delete().eq('document_id', document_id).execute()
-            
-            chunks = self._chunk_text(content, chunk_size, chunk_overlap)
-            total_chunks = len(chunks)
-            
-            for model_id in model_ids:
-                model_name = next(
-                    (name for name, m in self._models_cache.items() if m.id == model_id),
-                    None
-                )
-                
-                if model_name:
-                    for chunk_index, chunk_text in enumerate(chunks):
-                        embedding = await self.create_embedding(chunk_text, model_name)
-                        
-                        self.supabase.table('embeddings').insert({
-                            'document_id': document_id,
-                            'embedding_model_id': model_id,
-                            'embedding': embedding,
-                            'chunk_text': chunk_text,
-                            'chunk_index': chunk_index,
-                            'total_chunks': total_chunks
-                        }).execute()
-        
-        return True
+        """Update document and optionally recreate embeddings using database transaction"""
+        if not self.pg_pool:
+            raise RuntimeError("PostgreSQL pool not initialized. Call init_pool() first.")
+
+        async with self.pg_pool.acquire() as conn:
+            async with conn.transaction():
+                # Build update query dynamically
+                update_parts = []
+                params = []
+                param_count = 1
+
+                if title is not None:
+                    update_parts.append(f"title = ${param_count}")
+                    params.append(title)
+                    param_count += 1
+
+                if content is not None:
+                    update_parts.append(f"content = ${param_count}")
+                    params.append(content)
+                    param_count += 1
+
+                if metadata is not None:
+                    update_parts.append(f"metadata = ${param_count}")
+                    params.append(json.dumps(metadata))
+                    param_count += 1
+
+                if tags is not None:
+                    update_parts.append(f"tags = ${param_count}")
+                    params.append(tags)
+                    param_count += 1
+
+                if update_parts:
+                    update_parts.append(f"updated_at = NOW()")
+                    params.append(document_id)
+
+                    await conn.execute(
+                        f"""
+                        UPDATE documents
+                        SET {', '.join(update_parts)}
+                        WHERE id = ${param_count}
+                        """,
+                        *params
+                    )
+
+                # Recreate embeddings if content changed
+                if recreate_embeddings and content is not None:
+                    # Get existing embedding model IDs
+                    existing = await conn.fetch(
+                        "SELECT DISTINCT embedding_model_id FROM embeddings WHERE document_id = $1",
+                        document_id
+                    )
+                    model_ids = [row['embedding_model_id'] for row in existing]
+
+                    # Delete old embeddings
+                    await conn.execute(
+                        "DELETE FROM embeddings WHERE document_id = $1",
+                        document_id
+                    )
+
+                    # Create new embeddings
+                    chunks = self._chunk_text(content, chunk_size, chunk_overlap)
+                    total_chunks = len(chunks)
+
+                    for model_id in model_ids:
+                        model_name = next(
+                            (name for name, m in self._models_cache.items() if m.id == model_id),
+                            None
+                        )
+
+                        if model_name:
+                            for chunk_index, chunk_text in enumerate(chunks):
+                                embedding = await self.create_embedding(chunk_text, model_name)
+
+                                await conn.execute(
+                                    """
+                                    INSERT INTO embeddings
+                                    (document_id, embedding_model_id, embedding, chunk_text, chunk_index, total_chunks)
+                                    VALUES ($1, $2, $3, $4, $5, $6)
+                                    """,
+                                    document_id, model_id, embedding, chunk_text, chunk_index, total_chunks
+                                )
+
+                return True
     
     def delete_document(self, document_id: str, soft_delete: bool = True) -> bool:
         """Delete document (soft or hard delete)"""
@@ -327,42 +409,68 @@ class VectorDatabase:
         seo_description: Optional[str] = None,
         og_image: Optional[str] = None,
         model_names: List[str] = None,
-        chunk_size: int = 500
+        chunk_size: int = 500,
+        chunk_overlap: int = 50
     ) -> Dict[str, str]:
-        """Add article with document and embeddings"""
-        document_id = await self.add_document(
-            user_id=user_id,
-            title=title,
-            content=content,
-            tags=tags,
-            metadata={'source': 'article', 'category': category},
-            model_names=model_names,
-            chunk_size=chunk_size
-        )
-        
+        """Add article with document and embeddings using database transaction"""
+        if not self.pg_pool:
+            raise RuntimeError("PostgreSQL pool not initialized. Call init_pool() first.")
+
+        if model_names is None:
+            model_names = list(self._models_cache.keys())
+
+        chunks = self._chunk_text(content, chunk_size, chunk_overlap)
+        total_chunks = len(chunks)
         slug = self._create_slug(title)
-        
-        article_result = self.supabase.table('articles').insert({
-            'user_id': user_id,
-            'document_id': document_id,
-            'title': title,
-            'subtitle': subtitle,
-            'content': content,
-            'excerpt': excerpt or content[:200],
-            'tags': tags or [],
-            'category': category,
-            'status': status,
-            'slug': slug,
-            'seo_title': seo_title,
-            'seo_description': seo_description,
-            'og_image': og_image,
-            'published_at': datetime.now().isoformat() if status == 'published' else None
-        }).execute()
-        
-        return {
-            'article_id': article_result.data[0]['id'],
-            'document_id': document_id
-        }
+
+        async with self.pg_pool.acquire() as conn:
+            async with conn.transaction():
+                # Insert document
+                document_id = await conn.fetchval(
+                    """
+                    INSERT INTO documents (user_id, title, content, metadata, tags)
+                    VALUES ($1, $2, $3, $4, $5)
+                    RETURNING id
+                    """,
+                    user_id, title, content,
+                    json.dumps({'source': 'article', 'category': category}),
+                    tags or []
+                )
+
+                # Create embeddings
+                for model_name in model_names:
+                    model = self._models_cache[model_name]
+
+                    for chunk_index, chunk_text in enumerate(chunks):
+                        embedding = await self.create_embedding(chunk_text, model_name)
+
+                        await conn.execute(
+                            """
+                            INSERT INTO embeddings
+                            (document_id, embedding_model_id, embedding, chunk_text, chunk_index, total_chunks)
+                            VALUES ($1, $2, $3, $4, $5, $6)
+                            """,
+                            document_id, model.id, embedding, chunk_text, chunk_index, total_chunks
+                        )
+
+                # Insert article
+                article_id = await conn.fetchval(
+                    """
+                    INSERT INTO articles
+                    (user_id, document_id, title, subtitle, content, excerpt, tags, category,
+                     status, slug, seo_title, seo_description, og_image, published_at)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+                    RETURNING id
+                    """,
+                    user_id, document_id, title, subtitle, content, excerpt or content[:200],
+                    tags or [], category, status, slug, seo_title, seo_description, og_image,
+                    datetime.now() if status == 'published' else None
+                )
+
+                return {
+                    'article_id': article_id,
+                    'document_id': document_id
+                }
     
     async def update_article(
         self,
@@ -377,51 +485,167 @@ class VectorDatabase:
         seo_title: Optional[str] = None,
         seo_description: Optional[str] = None,
         og_image: Optional[str] = None,
-        recreate_embeddings: bool = True
+        recreate_embeddings: bool = True,
+        chunk_size: int = 500,
+        chunk_overlap: int = 50
     ) -> bool:
-        """Update article and optionally recreate embeddings"""
-        article = self.supabase.table('articles').select('document_id').eq('id', article_id).single().execute()
-        
-        if not article.data:
-            raise ValueError(f"Article {article_id} not found")
-        
-        document_id = article.data['document_id']
-        
-        article_update = {}
-        if title is not None:
-            article_update['title'] = title
-        if content is not None:
-            article_update['content'] = content
-        if subtitle is not None:
-            article_update['subtitle'] = subtitle
-        if excerpt is not None:
-            article_update['excerpt'] = excerpt
-        if tags is not None:
-            article_update['tags'] = tags
-        if category is not None:
-            article_update['category'] = category
-        if status is not None:
-            article_update['status'] = status
-            if status == 'published':
-                article_update['published_at'] = datetime.now().isoformat()
-        if seo_title is not None:
-            article_update['seo_title'] = seo_title
-        if seo_description is not None:
-            article_update['seo_description'] = seo_description
-        if og_image is not None:
-            article_update['og_image'] = og_image
-        
-        self.supabase.table('articles').update(article_update).eq('id', article_id).execute()
-        
-        await self.update_document(
-            document_id=document_id,
-            title=title,
-            content=content,
-            tags=tags,
-            recreate_embeddings=recreate_embeddings
-        )
-        
-        return True
+        """Update article and optionally recreate embeddings using database transaction"""
+        if not self.pg_pool:
+            raise RuntimeError("PostgreSQL pool not initialized. Call init_pool() first.")
+
+        async with self.pg_pool.acquire() as conn:
+            async with conn.transaction():
+                # Get document_id
+                result = await conn.fetchrow(
+                    "SELECT document_id FROM articles WHERE id = $1",
+                    article_id
+                )
+                if not result:
+                    raise ValueError(f"Article {article_id} not found")
+
+                document_id = result['document_id']
+
+                # Update article
+                article_update_parts = []
+                article_params = []
+                param_count = 1
+
+                if title is not None:
+                    article_update_parts.append(f"title = ${param_count}")
+                    article_params.append(title)
+                    param_count += 1
+
+                if content is not None:
+                    article_update_parts.append(f"content = ${param_count}")
+                    article_params.append(content)
+                    param_count += 1
+
+                if subtitle is not None:
+                    article_update_parts.append(f"subtitle = ${param_count}")
+                    article_params.append(subtitle)
+                    param_count += 1
+
+                if excerpt is not None:
+                    article_update_parts.append(f"excerpt = ${param_count}")
+                    article_params.append(excerpt)
+                    param_count += 1
+
+                if tags is not None:
+                    article_update_parts.append(f"tags = ${param_count}")
+                    article_params.append(tags)
+                    param_count += 1
+
+                if category is not None:
+                    article_update_parts.append(f"category = ${param_count}")
+                    article_params.append(category)
+                    param_count += 1
+
+                if status is not None:
+                    article_update_parts.append(f"status = ${param_count}")
+                    article_params.append(status)
+                    param_count += 1
+                    if status == 'published':
+                        article_update_parts.append(f"published_at = ${param_count}")
+                        article_params.append(datetime.now())
+                        param_count += 1
+
+                if seo_title is not None:
+                    article_update_parts.append(f"seo_title = ${param_count}")
+                    article_params.append(seo_title)
+                    param_count += 1
+
+                if seo_description is not None:
+                    article_update_parts.append(f"seo_description = ${param_count}")
+                    article_params.append(seo_description)
+                    param_count += 1
+
+                if og_image is not None:
+                    article_update_parts.append(f"og_image = ${param_count}")
+                    article_params.append(og_image)
+                    param_count += 1
+
+                if article_update_parts:
+                    article_update_parts.append(f"updated_at = NOW()")
+                    article_params.append(article_id)
+
+                    await conn.execute(
+                        f"""
+                        UPDATE articles
+                        SET {', '.join(article_update_parts)}
+                        WHERE id = ${param_count}
+                        """,
+                        *article_params
+                    )
+
+                # Update document
+                doc_update_parts = []
+                doc_params = []
+                param_count = 1
+
+                if title is not None:
+                    doc_update_parts.append(f"title = ${param_count}")
+                    doc_params.append(title)
+                    param_count += 1
+
+                if content is not None:
+                    doc_update_parts.append(f"content = ${param_count}")
+                    doc_params.append(content)
+                    param_count += 1
+
+                if tags is not None:
+                    doc_update_parts.append(f"tags = ${param_count}")
+                    doc_params.append(tags)
+                    param_count += 1
+
+                if doc_update_parts:
+                    doc_update_parts.append(f"updated_at = NOW()")
+                    doc_params.append(document_id)
+
+                    await conn.execute(
+                        f"""
+                        UPDATE documents
+                        SET {', '.join(doc_update_parts)}
+                        WHERE id = ${param_count}
+                        """,
+                        *doc_params
+                    )
+
+                # Recreate embeddings if needed
+                if recreate_embeddings and content is not None:
+                    existing = await conn.fetch(
+                        "SELECT DISTINCT embedding_model_id FROM embeddings WHERE document_id = $1",
+                        document_id
+                    )
+                    model_ids = [row['embedding_model_id'] for row in existing]
+
+                    await conn.execute(
+                        "DELETE FROM embeddings WHERE document_id = $1",
+                        document_id
+                    )
+
+                    chunks = self._chunk_text(content, chunk_size, chunk_overlap)
+                    total_chunks = len(chunks)
+
+                    for model_id in model_ids:
+                        model_name = next(
+                            (name for name, m in self._models_cache.items() if m.id == model_id),
+                            None
+                        )
+
+                        if model_name:
+                            for chunk_index, chunk_text in enumerate(chunks):
+                                embedding = await self.create_embedding(chunk_text, model_name)
+
+                                await conn.execute(
+                                    """
+                                    INSERT INTO embeddings
+                                    (document_id, embedding_model_id, embedding, chunk_text, chunk_index, total_chunks)
+                                    VALUES ($1, $2, $3, $4, $5, $6)
+                                    """,
+                                    document_id, model_id, embedding, chunk_text, chunk_index, total_chunks
+                                )
+
+                return True
     
     def delete_article(self, article_id: str, soft_delete: bool = True) -> bool:
         """Delete article and associated document"""
@@ -499,47 +723,85 @@ class VectorDatabase:
         is_current: bool = False,
         is_featured: bool = False,
         display_order: Optional[int] = None,
-        model_names: List[str] = None
+        model_names: List[str] = None,
+        chunk_size: int = 500,
+        chunk_overlap: int = 50
     ) -> Dict[str, str]:
-        """Add profile data with optional document/embedding"""
-        result = {'profile_id': None, 'document_id': None}
-        
-        profile_result = self.supabase.table('profile_data').insert({
-            'user_id': user_id,
-            'category': category,
-            'data': data,
-            'start_date': start_date or data.get('start_date'),
-            'end_date': end_date or data.get('end_date'),
-            'is_current': is_current or data.get('current', False),
-            'is_featured': is_featured,
-            'display_order': display_order
-        }).execute()
-        
-        result['profile_id'] = profile_result.data[0]['id']
-        
-        if searchable:
-            profile = self.supabase.table('profile_data').select('searchable_text').eq(
-                'id', result['profile_id']
-            ).single().execute()
-            
-            searchable_text = profile.data['searchable_text']
-            
-            document_id = await self.add_document(
-                user_id=user_id,
-                title=data.get('title', category),
-                content=searchable_text,
-                metadata={'source': 'profile_data', 'category': category, 'profile_data': data},
-                tags=[category],
-                model_names=model_names
-            )
-            
-            self.supabase.table('profile_data').update({
-                'document_id': document_id
-            }).eq('id', result['profile_id']).execute()
-            
-            result['document_id'] = document_id
-        
-        return result
+        """Add profile data with optional document/embedding using database transaction"""
+        if not self.pg_pool:
+            raise RuntimeError("PostgreSQL pool not initialized. Call init_pool() first.")
+
+        if model_names is None:
+            model_names = list(self._models_cache.keys())
+
+        async with self.pg_pool.acquire() as conn:
+            async with conn.transaction():
+                # Insert profile data
+                profile_id = await conn.fetchval(
+                    """
+                    INSERT INTO profile_data
+                    (user_id, category, data, start_date, end_date, is_current, is_featured, display_order)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                    RETURNING id
+                    """,
+                    user_id, category, json.dumps(data),
+                    start_date or data.get('start_date'),
+                    end_date or data.get('end_date'),
+                    is_current or data.get('current', False),
+                    is_featured, display_order
+                )
+
+                document_id = None
+
+                if searchable:
+                    # Get searchable_text (assuming it's generated by DB trigger or computed column)
+                    searchable_text_row = await conn.fetchrow(
+                        "SELECT searchable_text FROM profile_data WHERE id = $1",
+                        profile_id
+                    )
+                    searchable_text = searchable_text_row['searchable_text']
+
+                    # Insert document
+                    document_id = await conn.fetchval(
+                        """
+                        INSERT INTO documents (user_id, title, content, metadata, tags)
+                        VALUES ($1, $2, $3, $4, $5)
+                        RETURNING id
+                        """,
+                        user_id, data.get('title', category), searchable_text,
+                        json.dumps({'source': 'profile_data', 'category': category, 'profile_data': data}),
+                        [category]
+                    )
+
+                    # Create embeddings
+                    chunks = self._chunk_text(searchable_text, chunk_size, chunk_overlap)
+                    total_chunks = len(chunks)
+
+                    for model_name in model_names:
+                        model = self._models_cache[model_name]
+
+                        for chunk_index, chunk_text in enumerate(chunks):
+                            embedding = await self.create_embedding(chunk_text, model_name)
+
+                            await conn.execute(
+                                """
+                                INSERT INTO embeddings
+                                (document_id, embedding_model_id, embedding, chunk_text, chunk_index, total_chunks)
+                                VALUES ($1, $2, $3, $4, $5, $6)
+                                """,
+                                document_id, model.id, embedding, chunk_text, chunk_index, total_chunks
+                            )
+
+                    # Update profile_data with document_id
+                    await conn.execute(
+                        "UPDATE profile_data SET document_id = $1 WHERE id = $2",
+                        document_id, profile_id
+                    )
+
+                return {
+                    'profile_id': profile_id,
+                    'document_id': document_id
+                }
     
     async def update_profile_data(
         self,
@@ -550,47 +812,129 @@ class VectorDatabase:
         is_current: Optional[bool] = None,
         is_featured: Optional[bool] = None,
         display_order: Optional[int] = None,
-        recreate_embeddings: bool = True
+        recreate_embeddings: bool = True,
+        chunk_size: int = 500,
+        chunk_overlap: int = 50
     ) -> bool:
-        """Update profile data and optionally recreate embeddings"""
-        profile = self.supabase.table('profile_data').select('*').eq('id', profile_id).single().execute()
-        
-        if not profile.data:
-            raise ValueError(f"Profile data {profile_id} not found")
-        
-        current_data = profile.data
-        
-        update_data = {}
-        if data:
-            updated_data = {**current_data['data'], **data}
-            update_data['data'] = updated_data
-        if start_date is not None:
-            update_data['start_date'] = start_date
-        if end_date is not None:
-            update_data['end_date'] = end_date
-        if is_current is not None:
-            update_data['is_current'] = is_current
-        if is_featured is not None:
-            update_data['is_featured'] = is_featured
-        if display_order is not None:
-            update_data['display_order'] = display_order
-        
-        self.supabase.table('profile_data').update(update_data).eq('id', profile_id).execute()
-        
-        if current_data['document_id'] and recreate_embeddings and data:
-            updated_profile = self.supabase.table('profile_data').select(
-                'searchable_text'
-            ).eq('id', profile_id).single().execute()
-            
-            searchable_text = updated_profile.data['searchable_text']
-            
-            await self.update_document(
-                document_id=current_data['document_id'],
-                content=searchable_text,
-                recreate_embeddings=True
-            )
-        
-        return True
+        """Update profile data and optionally recreate embeddings using database transaction"""
+        if not self.pg_pool:
+            raise RuntimeError("PostgreSQL pool not initialized. Call init_pool() first.")
+
+        async with self.pg_pool.acquire() as conn:
+            async with conn.transaction():
+                # Get current profile data
+                profile = await conn.fetchrow(
+                    "SELECT data, document_id FROM profile_data WHERE id = $1",
+                    profile_id
+                )
+
+                if not profile:
+                    raise ValueError(f"Profile data {profile_id} not found")
+
+                current_data = json.loads(profile['data']) if isinstance(profile['data'], str) else profile['data']
+                document_id = profile['document_id']
+
+                # Build update query
+                update_parts = []
+                params = []
+                param_count = 1
+
+                if data:
+                    updated_data = {**current_data, **data}
+                    update_parts.append(f"data = ${param_count}")
+                    params.append(json.dumps(updated_data))
+                    param_count += 1
+
+                if start_date is not None:
+                    update_parts.append(f"start_date = ${param_count}")
+                    params.append(start_date)
+                    param_count += 1
+
+                if end_date is not None:
+                    update_parts.append(f"end_date = ${param_count}")
+                    params.append(end_date)
+                    param_count += 1
+
+                if is_current is not None:
+                    update_parts.append(f"is_current = ${param_count}")
+                    params.append(is_current)
+                    param_count += 1
+
+                if is_featured is not None:
+                    update_parts.append(f"is_featured = ${param_count}")
+                    params.append(is_featured)
+                    param_count += 1
+
+                if display_order is not None:
+                    update_parts.append(f"display_order = ${param_count}")
+                    params.append(display_order)
+                    param_count += 1
+
+                if update_parts:
+                    update_parts.append(f"updated_at = NOW()")
+                    params.append(profile_id)
+
+                    await conn.execute(
+                        f"""
+                        UPDATE profile_data
+                        SET {', '.join(update_parts)}
+                        WHERE id = ${param_count}
+                        """,
+                        *params
+                    )
+
+                # Recreate embeddings if needed
+                if document_id and recreate_embeddings and data:
+                    # Get updated searchable_text
+                    updated_profile = await conn.fetchrow(
+                        "SELECT searchable_text FROM profile_data WHERE id = $1",
+                        profile_id
+                    )
+                    searchable_text = updated_profile['searchable_text']
+
+                    # Update document content
+                    await conn.execute(
+                        "UPDATE documents SET content = $1, updated_at = NOW() WHERE id = $2",
+                        searchable_text, document_id
+                    )
+
+                    # Get existing embedding model IDs
+                    existing = await conn.fetch(
+                        "SELECT DISTINCT embedding_model_id FROM embeddings WHERE document_id = $1",
+                        document_id
+                    )
+                    model_ids = [row['embedding_model_id'] for row in existing]
+
+                    # Delete old embeddings
+                    await conn.execute(
+                        "DELETE FROM embeddings WHERE document_id = $1",
+                        document_id
+                    )
+
+                    # Create new embeddings
+                    chunks = self._chunk_text(searchable_text, chunk_size, chunk_overlap)
+                    total_chunks = len(chunks)
+
+                    for model_id in model_ids:
+                        model_name = next(
+                            (name for name, m in self._models_cache.items() if m.id == model_id),
+                            None
+                        )
+
+                        if model_name:
+                            for chunk_index, chunk_text in enumerate(chunks):
+                                embedding = await self.create_embedding(chunk_text, model_name)
+
+                                await conn.execute(
+                                    """
+                                    INSERT INTO embeddings
+                                    (document_id, embedding_model_id, embedding, chunk_text, chunk_index, total_chunks)
+                                    VALUES ($1, $2, $3, $4, $5, $6)
+                                    """,
+                                    document_id, model_id, embedding, chunk_text, chunk_index, total_chunks
+                                )
+
+                return True
     
     def delete_profile_data(self, profile_id: str) -> bool:
         """Delete profile data"""
@@ -646,53 +990,88 @@ class VectorDatabase:
         related_articles: List[str] = None,
         related_experiences: List[str] = None,
         searchable: bool = True,
-        model_names: List[str] = None
+        model_names: List[str] = None,
+        chunk_size: int = 500,
+        chunk_overlap: int = 50
     ) -> Dict[str, str]:
-        """Add personal attribute with optional document/embedding"""
-        result = {'attribute_id': None, 'document_id': None}
-        
-        attr_result = self.supabase.table('personal_attributes').insert({
-            'user_id': user_id,
-            'attribute_type': attribute_type,
-            'title': title,
-            'description': description,
-            'examples': examples or [],
-            'importance_score': importance_score,
-            'confidence_level': confidence_level,
-            'related_articles': related_articles or [],
-            'related_experiences': related_experiences or []
-        }).execute()
-        
-        result['attribute_id'] = attr_result.data[0]['id']
-        
-        if searchable:
-            attr = self.supabase.table('personal_attributes').select('searchable_text').eq(
-                'id', result['attribute_id']
-            ).single().execute()
-            
-            searchable_text = attr.data['searchable_text']
-            
-            document_id = await self.add_document(
-                user_id=user_id,
-                title=title,
-                content=searchable_text,
-                metadata={
-                    'source': 'personal_attribute',
-                    'attribute_type': attribute_type,
-                    'importance_score': importance_score,
-                    'confidence_level': confidence_level
-                },
-                tags=[attribute_type],
-                model_names=model_names
-            )
-            
-            self.supabase.table('personal_attributes').update({
-                'document_id': document_id
-            }).eq('id', result['attribute_id']).execute()
-            
-            result['document_id'] = document_id
-        
-        return result
+        """Add personal attribute with optional document/embedding using database transaction"""
+        if not self.pg_pool:
+            raise RuntimeError("PostgreSQL pool not initialized. Call init_pool() first.")
+
+        if model_names is None:
+            model_names = list(self._models_cache.keys())
+
+        async with self.pg_pool.acquire() as conn:
+            async with conn.transaction():
+                # Insert personal attribute
+                attribute_id = await conn.fetchval(
+                    """
+                    INSERT INTO personal_attributes
+                    (user_id, attribute_type, title, description, examples, importance_score,
+                     confidence_level, related_articles, related_experiences)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                    RETURNING id
+                    """,
+                    user_id, attribute_type, title, description, examples or [],
+                    importance_score, confidence_level, related_articles or [], related_experiences or []
+                )
+
+                document_id = None
+
+                if searchable:
+                    # Get searchable_text
+                    searchable_text_row = await conn.fetchrow(
+                        "SELECT searchable_text FROM personal_attributes WHERE id = $1",
+                        attribute_id
+                    )
+                    searchable_text = searchable_text_row['searchable_text']
+
+                    # Insert document
+                    document_id = await conn.fetchval(
+                        """
+                        INSERT INTO documents (user_id, title, content, metadata, tags)
+                        VALUES ($1, $2, $3, $4, $5)
+                        RETURNING id
+                        """,
+                        user_id, title, searchable_text,
+                        json.dumps({
+                            'source': 'personal_attribute',
+                            'attribute_type': attribute_type,
+                            'importance_score': importance_score,
+                            'confidence_level': confidence_level
+                        }),
+                        [attribute_type]
+                    )
+
+                    # Create embeddings
+                    chunks = self._chunk_text(searchable_text, chunk_size, chunk_overlap)
+                    total_chunks = len(chunks)
+
+                    for model_name in model_names:
+                        model = self._models_cache[model_name]
+
+                        for chunk_index, chunk_text in enumerate(chunks):
+                            embedding = await self.create_embedding(chunk_text, model_name)
+
+                            await conn.execute(
+                                """
+                                INSERT INTO embeddings
+                                (document_id, embedding_model_id, embedding, chunk_text, chunk_index, total_chunks)
+                                VALUES ($1, $2, $3, $4, $5, $6)
+                                """,
+                                document_id, model.id, embedding, chunk_text, chunk_index, total_chunks
+                            )
+
+                    # Update personal_attributes with document_id
+                    await conn.execute(
+                        "UPDATE personal_attributes SET document_id = $1 WHERE id = $2",
+                        document_id, attribute_id
+                    )
+
+                return {
+                    'attribute_id': attribute_id,
+                    'document_id': document_id
+                }
     
     # ========================================================================
     # SQL FUNCTION: add_personal_attribute
@@ -776,50 +1155,133 @@ class VectorDatabase:
         confidence_level: Optional[int] = None,
         related_articles: Optional[List[str]] = None,
         related_experiences: Optional[List[str]] = None,
-        recreate_embeddings: bool = True
+        recreate_embeddings: bool = True,
+        chunk_size: int = 500,
+        chunk_overlap: int = 50
     ) -> bool:
-        """Update personal attribute"""
-        attr = self.supabase.table('personal_attributes').select('*').eq('id', attribute_id).single().execute()
-        
-        if not attr.data:
-            raise ValueError(f"Personal attribute {attribute_id} not found")
-        
-        current = attr.data
-        
-        update_data = {}
-        if title is not None:
-            update_data['title'] = title
-        if description is not None:
-            update_data['description'] = description
-        if examples is not None:
-            update_data['examples'] = examples
-        if importance_score is not None:
-            update_data['importance_score'] = importance_score
-        if confidence_level is not None:
-            update_data['confidence_level'] = confidence_level
-        if related_articles is not None:
-            update_data['related_articles'] = related_articles
-        if related_experiences is not None:
-            update_data['related_experiences'] = related_experiences
-        
-        self.supabase.table('personal_attributes').update(update_data).eq('id', attribute_id).execute()
-        
-        if current['document_id'] and recreate_embeddings and (title or description or examples):
-            updated_attr = self.supabase.table('personal_attributes').select(
-                'searchable_text', 'title'
-            ).eq('id', attribute_id).single().execute()
-            
-            searchable_text = updated_attr.data['searchable_text']
-            new_title = updated_attr.data['title']
-            
-            await self.update_document(
-                document_id=current['document_id'],
-                title=new_title,
-                content=searchable_text,
-                recreate_embeddings=True
-            )
-        
-        return True
+        """Update personal attribute using database transaction"""
+        if not self.pg_pool:
+            raise RuntimeError("PostgreSQL pool not initialized. Call init_pool() first.")
+
+        async with self.pg_pool.acquire() as conn:
+            async with conn.transaction():
+                # Get current attribute
+                attr = await conn.fetchrow(
+                    "SELECT document_id FROM personal_attributes WHERE id = $1",
+                    attribute_id
+                )
+
+                if not attr:
+                    raise ValueError(f"Personal attribute {attribute_id} not found")
+
+                document_id = attr['document_id']
+
+                # Build update query
+                update_parts = []
+                params = []
+                param_count = 1
+
+                if title is not None:
+                    update_parts.append(f"title = ${param_count}")
+                    params.append(title)
+                    param_count += 1
+
+                if description is not None:
+                    update_parts.append(f"description = ${param_count}")
+                    params.append(description)
+                    param_count += 1
+
+                if examples is not None:
+                    update_parts.append(f"examples = ${param_count}")
+                    params.append(examples)
+                    param_count += 1
+
+                if importance_score is not None:
+                    update_parts.append(f"importance_score = ${param_count}")
+                    params.append(importance_score)
+                    param_count += 1
+
+                if confidence_level is not None:
+                    update_parts.append(f"confidence_level = ${param_count}")
+                    params.append(confidence_level)
+                    param_count += 1
+
+                if related_articles is not None:
+                    update_parts.append(f"related_articles = ${param_count}")
+                    params.append(related_articles)
+                    param_count += 1
+
+                if related_experiences is not None:
+                    update_parts.append(f"related_experiences = ${param_count}")
+                    params.append(related_experiences)
+                    param_count += 1
+
+                if update_parts:
+                    update_parts.append(f"updated_at = NOW()")
+                    params.append(attribute_id)
+
+                    await conn.execute(
+                        f"""
+                        UPDATE personal_attributes
+                        SET {', '.join(update_parts)}
+                        WHERE id = ${param_count}
+                        """,
+                        *params
+                    )
+
+                # Recreate embeddings if needed
+                if document_id and recreate_embeddings and (title or description or examples):
+                    # Get updated searchable_text and title
+                    updated_attr = await conn.fetchrow(
+                        "SELECT searchable_text, title FROM personal_attributes WHERE id = $1",
+                        attribute_id
+                    )
+                    searchable_text = updated_attr['searchable_text']
+                    new_title = updated_attr['title']
+
+                    # Update document
+                    await conn.execute(
+                        "UPDATE documents SET title = $1, content = $2, updated_at = NOW() WHERE id = $3",
+                        new_title, searchable_text, document_id
+                    )
+
+                    # Get existing embedding model IDs
+                    existing = await conn.fetch(
+                        "SELECT DISTINCT embedding_model_id FROM embeddings WHERE document_id = $1",
+                        document_id
+                    )
+                    model_ids = [row['embedding_model_id'] for row in existing]
+
+                    # Delete old embeddings
+                    await conn.execute(
+                        "DELETE FROM embeddings WHERE document_id = $1",
+                        document_id
+                    )
+
+                    # Create new embeddings
+                    chunks = self._chunk_text(searchable_text, chunk_size, chunk_overlap)
+                    total_chunks = len(chunks)
+
+                    for model_id in model_ids:
+                        model_name = next(
+                            (name for name, m in self._models_cache.items() if m.id == model_id),
+                            None
+                        )
+
+                        if model_name:
+                            for chunk_index, chunk_text in enumerate(chunks):
+                                embedding = await self.create_embedding(chunk_text, model_name)
+
+                                await conn.execute(
+                                    """
+                                    INSERT INTO embeddings
+                                    (document_id, embedding_model_id, embedding, chunk_text, chunk_index, total_chunks)
+                                    VALUES ($1, $2, $3, $4, $5, $6)
+                                    """,
+                                    document_id, model_id, embedding, chunk_text, chunk_index, total_chunks
+                                )
+
+                return True
     
     def delete_personal_attribute(self, attribute_id: str) -> bool:
         """Delete personal attribute"""

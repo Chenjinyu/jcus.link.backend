@@ -96,6 +96,8 @@ alwaysApply: false
 - Include parameter descriptions and return types
 - Document exceptions that may be raised
 - Add comments for complex logic, not obvious code
+- **NEVER create markdown documentation files unless explicitly requested by the user**
+- Focus on code comments and docstrings instead of separate documentation files
 
 ## Performance
 
@@ -121,3 +123,13 @@ alwaysApply: false
 - Follow the existing project structure
 - Use YAML files for configuration when appropriate
 - Keep LangChain chains modular and reusable
+
+## Vector Database Patterns (libs/vector_database.py)
+
+- Use `VectorDatabase` class for all vector operations
+- Support multiple embedding providers: OpenAI, Google Gemini, Ollama
+- Use model selection helpers: `get_default_model()`, `list_available_models()`
+- Prefer convenience methods: `add_document_with_model()`, `search_with_model()`
+- Use SQL function wrappers for batch operations when available
+- Always validate models before use: `validate_model()`
+- Support async operations for all embedding creation
