@@ -508,16 +508,19 @@ CREATE TRIGGER update_personal_attributes_searchable_text_trigger
 DROP TRIGGER IF EXISTS update_profile_data_searchable_text_trigger ON profile_data;
 DROP FUNCTION IF EXISTS update_profile_data_searchable_text();
 
+-- purpose: take structured JSONB data(NEW.data), extract common fields, and
+-- combine them into a single searchable_text field for better searchability.
 CREATE OR REPLACE FUNCTION update_profile_data_searchable_text()
-RETURNS TRIGGER
-LANGUAGE plpgsql
-SET search_path = public
+RETURNS TRIGGER -- the func will be called by trigger, which receives NEW
+LANGUAGE plpgsql -- support variable, conditions, loop/logic
+SET search_path = public -- best practice and safety measure, to ensure all table/function refereneces to public
 AS $$
 DECLARE
   text_parts TEXT[] := '{}';
 BEGIN
   -- Extract searchable fields from JSONB based on common patterns
-  IF NEW.data ? 'title' THEN
+  -- NEW is the row beling inserted or updated.
+  IF NEW.data ? 'title' THEN -- if NEW.data has the key of title
     text_parts := array_append(text_parts, NEW.data->>'title');
   END IF;
   
@@ -532,7 +535,7 @@ BEGIN
   IF NEW.data ? 'description' THEN
     text_parts := array_append(text_parts, NEW.data->>'description');
   END IF;
-  
+  -- ->> etract data, -> extract JSON
   IF NEW.data ? 'skills' THEN
     -- Handle both string and array
     IF jsonb_typeof(NEW.data->'skills') = 'array' THEN
@@ -558,6 +561,8 @@ BEGIN
 END;
 $$;
 
+-- create trigger when insert or update the profile_data, then call 
+-- the function of update_profile_data_searchable_text
 CREATE TRIGGER update_profile_data_searchable_text_trigger
   BEFORE INSERT OR UPDATE ON profile_data
   FOR EACH ROW
