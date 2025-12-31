@@ -1,9 +1,14 @@
 # file_loaders.py
 import os
+
 from langchain_community.document_loaders import (
-    PyPDFLoader, Docx2txtLoader, TextLoader,
-    JSONLoader, UnstructuredMarkdownLoader
+    Docx2txtLoader,
+    JSONLoader,
+    PyPDFLoader,
+    TextLoader,
+    UnstructuredMarkdownLoader,
 )
+
 
 def load_file_content(file_path: str) -> str:
     ext = os.path.splitext(file_path)[1].lower()

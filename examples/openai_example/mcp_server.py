@@ -1,11 +1,12 @@
 # mcp_server.py
+from embeddings import get_embedding
 from fastmcp import FastMCP
 from file_loaders import load_file_content
-from embeddings import get_embedding
-from vector_search import query_supabase
 from summarizer import summarize
+from vector_search import query_supabase
 
 app = FastMCP()
+
 
 @app.tool()
 async def process_file(file_path: str, model: str = "openai"):
@@ -25,6 +26,7 @@ async def process_file(file_path: str, model: str = "openai"):
     summary = summarize(content, related_docs)
 
     return summary
+
 
 if __name__ == "__main__":
     app.run()

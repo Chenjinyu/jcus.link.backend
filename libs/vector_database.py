@@ -1,19 +1,22 @@
 # vector_database.py
 import json
-import httpx
-import asyncpg
-from typing import List, Dict, Optional, Union, Literal
 from dataclasses import dataclass
-from supabase import create_client, Client
-from datetime import datetime, date
+from datetime import date, datetime
+from typing import Dict, List, Literal, Optional, Union
+
+import asyncpg
+import httpx
 import openai
+from supabase import Client, create_client
 
 try:
     import google as genai
+
     GOOGLE_AVAILABLE = True
 except ImportError:
     GOOGLE_AVAILABLE = False
     genai = None
+
 
 @dataclass
 class EmbeddingModel:
@@ -25,22 +28,23 @@ class EmbeddingModel:
     is_local: bool
     cost_per_token: Optional[float] = None
 
+
 class VectorDatabase:
     """
     Comprehensive vector database interface for managing documents,
     embeddings, articles, profile data, and personal attributes.
-    
+
     Supports multiple AI providers: OpenAI, Ollama, Google Gemini
     """
-    
+
     def __init__(
-        self, 
-        supabase_url: str, 
-        supabase_key: str, 
+        self,
+        supabase_url: str,
+        supabase_key: str,
         postgres_url: str,
         openai_key: Optional[str] = None,
         google_key: Optional[str] = None,
-        ollama_url: str = 'http://localhost:11434'
+        ollama_url: str = "http://localhost:11434",
     ):
         self.supabase: Client = create_client(supabase_url, supabase_key)
 
@@ -69,7 +73,7 @@ class VectorDatabase:
                 min_size=2,
                 max_size=10,
                 command_timeout=60,
-                statement_cache_size=0 # Disable prepared statement caching.
+                statement_cache_size=0,  # Disable prepared statement caching.
             )
             # Fix profile_data trigger if needed (disable searchable_text assignment)
             await self._fix_profile_data_trigger()
@@ -79,7 +83,7 @@ class VectorDatabase:
         if self.pg_pool:
             await self.pg_pool.close()
             self.pg_pool = None
-    
+
     async def _fix_profile_data_trigger(self):
         """
         Fix profile_data trigger to not set searchable_text (column doesn't exist).
@@ -111,15 +115,17 @@ class VectorDatabase:
         except Exception as e:
             # If trigger fix fails, log but don't fail initialization
             print(f"Warning: Could not fix profile_data trigger: {e}")
-            print("You may need to run the SQL migration manually: db_migration/supabase/fix_profile_data_trigger.sql")
-    
+            print(
+                "You may need to run the SQL migration manually: db_migration/supabase/fix_profile_data_trigger.sql"
+            )
+
     def _parse_date(self, date_value: Optional[Union[str, date]]) -> Optional[date]:
         """
         Convert string date to Python date object for asyncpg.
-        
+
         Args:
             date_value: String in 'YYYY-MM-DD' format or date object or None
-            
+
         Returns:
             date object or None
         """
@@ -130,104 +136,111 @@ class VectorDatabase:
         if isinstance(date_value, str):
             # Parse 'YYYY-MM-DD' format
             try:
-                return datetime.strptime(date_value, '%Y-%m-%d').date()
+                return datetime.strptime(date_value, "%Y-%m-%d").date()
             except ValueError:
                 # Try other common formats
                 try:
-                    return datetime.strptime(date_value, '%Y/%m/%d').date()
+                    return datetime.strptime(date_value, "%Y/%m/%d").date()
                 except ValueError:
-                    raise ValueError(f"Invalid date format: {date_value}. Expected 'YYYY-MM-DD' or 'YYYY/MM/DD'")
-        raise TypeError(f"date_value must be str, date, or None, got {type(date_value)}")
-    
+                    raise ValueError(
+                        f"Invalid date format: {date_value}. Expected 'YYYY-MM-DD' or 'YYYY/MM/DD'"
+                    )
+        raise TypeError(
+            f"date_value must be str, date, or None, got {type(date_value)}"
+        )
+
     def _generate_searchable_text_from_profile_data(self, data: Dict) -> str:
         """
         Generate searchable text from profile_data JSONB data.
         Replicates the logic from update_profile_data_searchable_text() trigger.
-        
+
         Args:
             data: Profile data dictionary
-            
+
         Returns:
             Searchable text string
         """
         text_parts = []
-        
-        if 'title' in data:
-            text_parts.append(str(data['title']))
-        
-        if 'company' in data:
-            text_parts.append(str(data['company']))
-        
-        if 'position' in data:
-            text_parts.append(str(data['position']))
-        
-        if 'description' in data:
-            text_parts.append(str(data['description']))
-        
-        if 'skills' in data:
-            skills = data['skills']
+
+        if "title" in data:
+            text_parts.append(str(data["title"]))
+
+        if "company" in data:
+            text_parts.append(str(data["company"]))
+
+        if "position" in data:
+            text_parts.append(str(data["position"]))
+
+        if "description" in data:
+            text_parts.append(str(data["description"]))
+
+        if "skills" in data:
+            skills = data["skills"]
             if isinstance(skills, list):
-                text_parts.append('Skills: ' + ', '.join(map(str, skills)))
+                text_parts.append("Skills: " + ", ".join(map(str, skills)))
             else:
-                text_parts.append('Skills: ' + str(skills))
-        
-        if 'achievements' in data:
-            achievements = data['achievements']
+                text_parts.append("Skills: " + str(skills))
+
+        if "achievements" in data:
+            achievements = data["achievements"]
             if isinstance(achievements, list):
-                text_parts.append('. '.join(map(str, achievements)))
+                text_parts.append(". ".join(map(str, achievements)))
             else:
                 text_parts.append(str(achievements))
-        
-        if 'responsibilities' in data:
-            responsibilities = data['responsibilities']
+
+        if "responsibilities" in data:
+            responsibilities = data["responsibilities"]
             if isinstance(responsibilities, list):
-                text_parts.append('. '.join(map(str, responsibilities)))
+                text_parts.append(". ".join(map(str, responsibilities)))
             else:
                 text_parts.append(str(responsibilities))
-        
+
         # Add other common fields
-        for key in ['institution', 'degree', 'field_of_study', 'name', 'level']:
+        for key in ["institution", "degree", "field_of_study", "name", "level"]:
             if key in data:
                 text_parts.append(str(data[key]))
-        
-        return '. '.join(text_parts) if text_parts else ''
-    
+
+        return ". ".join(text_parts) if text_parts else ""
+
     def _load_models(self):
         """Load embedding models from database and set availability based on client initialization"""
-        result = self.supabase.table('embedding_models').select('*').eq('is_active', True).execute()
+        result = (
+            self.supabase.table("embedding_models")
+            .select("*")
+            .eq("is_active", True)
+            .execute()
+        )
         for model_data in result.data:
-            provider = model_data['provider']
-            if provider not in ['openai', 'ollama', 'google']:
+            provider = model_data["provider"]
+            if provider not in ["openai", "ollama", "google"]:
                 raise ValueError(f"Unsupported provider: {provider}")
 
             # Determine availability based on provider and client initialization
-            if provider == 'openai' and self.openai_client is None:
+            if provider == "openai" and self.openai_client is None:
                 continue
-            elif provider == 'ollama' and self.ollama_url is None:
+            elif provider == "ollama" and self.ollama_url is None:
                 continue
-            elif provider == 'google' and self.google_client is None:
+            elif provider == "google" and self.google_client is None:
                 continue
 
-            self._models_cache[model_data['name']] = EmbeddingModel(
-                id=model_data['id'],
-                name=model_data['name'],
-                provider=model_data['provider'],
-                model_identifier=model_data['model_identifier'],
-                dimensions=model_data['dimensions'],
-                is_local=model_data['is_local'],
-                cost_per_token=model_data.get('cost_per_token')
+            self._models_cache[model_data["name"]] = EmbeddingModel(
+                id=model_data["id"],
+                name=model_data["name"],
+                provider=model_data["provider"],
+                model_identifier=model_data["model_identifier"],
+                dimensions=model_data["dimensions"],
+                is_local=model_data["is_local"],
+                cost_per_token=model_data.get("cost_per_token"),
             )
-        print("--"*20)
+        print("--" * 20)
         print(self._models_cache)
-    
+
     # ========================================================================
     # EMBEDDING CREATION - MULTI-PROVIDER
     # ========================================================================
-    
+
     async def create_embedding(
-        self, 
-        text: str, 
-        model_name: str = 'nomic-embed-text-768'
+        self, text: str, model_name: str = "nomic-embed-text-768"
     ) -> List[float]:
         """
         Create embedding using specified model.
@@ -236,57 +249,62 @@ class VectorDatabase:
         model = self._models_cache.get(model_name)
         if not model:
             raise ValueError(f"Model {model_name} not found or not active")
-        
-        if model.provider == 'openai':
+
+        if model.provider == "openai":
             return await self._create_openai_embedding(text, model)
-        elif model.provider == 'ollama':
+        elif model.provider == "ollama":
             return await self._create_ollama_embedding(text, model)
-        elif model.provider == 'google':
+        elif model.provider == "google":
             return await self._create_google_embedding(text, model)
         else:
             raise ValueError(f"Provider {model.provider} not supported")
-    
-    async def _create_openai_embedding(self, text: str, model: EmbeddingModel) -> List[float]:
+
+    async def _create_openai_embedding(
+        self, text: str, model: EmbeddingModel
+    ) -> List[float]:
         """Create OpenAI embedding with dimension reduction if needed"""
         if not self.openai_client:
-            raise ValueError("OpenAI client not initialized. Provide openai_key in constructor.")
-        
+            raise ValueError(
+                "OpenAI client not initialized. Provide openai_key in constructor."
+            )
+
         response = self.openai_client.embeddings.create(
             model=model.model_identifier,
             input=text,
-            dimensions=model.dimensions if model.dimensions <= 2000 else None
+            dimensions=model.dimensions if model.dimensions <= 2000 else None,
         )
         return response.data[0].embedding
-    
-    async def _create_ollama_embedding(self, text: str, model: EmbeddingModel) -> List[float]:
+
+    async def _create_ollama_embedding(
+        self, text: str, model: EmbeddingModel
+    ) -> List[float]:
         """Create Ollama embedding (local)"""
         async with httpx.AsyncClient() as client:
             response = await client.post(
-                f'{self.ollama_url}/api/embeddings',
-                json={
-                    'model': model.model_identifier,
-                    'prompt': text
-                },
-                timeout=30.0
+                f"{self.ollama_url}/api/embeddings",
+                json={"model": model.model_identifier, "prompt": text},
+                timeout=30.0,
             )
-            return response.json()['embedding']
-    
-    async def _create_google_embedding(self, text: str, model: EmbeddingModel) -> List[float]:
+            return response.json()["embedding"]
+
+    async def _create_google_embedding(
+        self, text: str, model: EmbeddingModel
+    ) -> List[float]:
         """Create Google Gemini embedding"""
         if not self.google_client:
-            raise ValueError("Google client not initialized. Provide google_key in constructor.")
-        
+            raise ValueError(
+                "Google client not initialized. Provide google_key in constructor."
+            )
+
         result = self.google_client.embed_content(
-            model=model.model_identifier,
-            content=text,
-            task_type="retrieval_document"
+            model=model.model_identifier, content=text, task_type="retrieval_document"
         )
-        return result['embedding']
-    
+        return result["embedding"]
+
     # ========================================================================
     # DOCUMENT OPERATIONS
     # ========================================================================
-    
+
     async def add_document(
         self,
         user_id: str,
@@ -296,7 +314,7 @@ class VectorDatabase:
         tags: List[str] = None,
         model_names: List[str] = None,
         chunk_size: int = 500,
-        chunk_overlap: int = 50
+        chunk_overlap: int = 50,
     ) -> str:
         """
         Add document with embeddings from multiple models using database transaction.
@@ -304,14 +322,16 @@ class VectorDatabase:
         If any error occurs, entire operation is rolled back.
         """
         if not self.pg_pool:
-            raise RuntimeError("PostgreSQL pool not initialized. Call init_pool() first.")
+            raise RuntimeError(
+                "PostgreSQL pool not initialized. Call init_pool() first."
+            )
 
         if model_names is None:
             model_names = list(self._models_cache.keys())
-        
+
         chunks = self._chunk_text(content, chunk_size, chunk_overlap)
         total_chunks = len(chunks)
-        
+
         async with self.pg_pool.acquire() as conn:
             async with conn.transaction():
                 # Insert document
@@ -321,17 +341,21 @@ class VectorDatabase:
                     VALUES ($1, $2, $3, $4, $5)
                     RETURNING id
                     """,
-                    user_id, title, content, json.dumps(metadata or {}), tags or []
+                    user_id,
+                    title,
+                    content,
+                    json.dumps(metadata or {}),
+                    tags or [],
                 )
 
                 # Create and insert embeddings for each model
         for model_name in model_names:
             model = self._models_cache[model_name]
-            
+
             for chunk_index, chunk_text in enumerate(chunks):
                 embedding = await self.create_embedding(chunk_text, model_name)
                 # Convert list to pgvector format: '[0.1, 0.2, ...]'
-                embedding_str = '[' + ','.join(map(str, embedding)) + ']'
+                embedding_str = "[" + ",".join(map(str, embedding)) + "]"
 
                 await conn.execute(
                     """
@@ -339,11 +363,16 @@ class VectorDatabase:
                     (document_id, embedding_model_id, embedding, chunk_text, chunk_index, total_chunks)
                     VALUES ($1, $2, $3::vector, $4, $5, $6)
                     """,
-                    document_id, model.id, embedding_str, chunk_text, chunk_index, total_chunks
+                    document_id,
+                    model.id,
+                    embedding_str,
+                    chunk_text,
+                    chunk_index,
+                    total_chunks,
                 )
-        
+
         return document_id
-    
+
     async def update_document(
         self,
         document_id: str,
@@ -353,11 +382,13 @@ class VectorDatabase:
         tags: Optional[List[str]] = None,
         recreate_embeddings: bool = True,
         chunk_size: int = 500,
-        chunk_overlap: int = 50
+        chunk_overlap: int = 50,
     ) -> bool:
         """Update document and optionally recreate embeddings using database transaction"""
         if not self.pg_pool:
-            raise RuntimeError("PostgreSQL pool not initialized. Call init_pool() first.")
+            raise RuntimeError(
+                "PostgreSQL pool not initialized. Call init_pool() first."
+            )
 
         async with self.pg_pool.acquire() as conn:
             async with conn.transaction():
@@ -393,42 +424,47 @@ class VectorDatabase:
                     await conn.execute(
                         f"""
                         UPDATE documents
-                        SET {', '.join(update_parts)}
+                        SET {", ".join(update_parts)}
                         WHERE id = ${param_count}
                         """,
-                        *params
+                        *params,
                     )
-        
+
                 # Recreate embeddings if content changed
                 if recreate_embeddings and content is not None:
                     # Get existing embedding model IDs
                     existing = await conn.fetch(
                         "SELECT DISTINCT embedding_model_id FROM embeddings WHERE document_id = $1",
-                        document_id
+                        document_id,
                     )
-                    model_ids = [row['embedding_model_id'] for row in existing]
-            
+                    model_ids = [row["embedding_model_id"] for row in existing]
+
                     # Delete old embeddings
                     await conn.execute(
-                        "DELETE FROM embeddings WHERE document_id = $1",
-                        document_id
+                        "DELETE FROM embeddings WHERE document_id = $1", document_id
                     )
-            
+
                     # Create new embeddings
                 chunks = self._chunk_text(content, chunk_size, chunk_overlap)
                 total_chunks = len(chunks)
-                
+
                 for model_id in model_ids:
                     model_name = next(
-                        (name for name, m in self._models_cache.items() if m.id == model_id),
-                        None
+                        (
+                            name
+                            for name, m in self._models_cache.items()
+                            if m.id == model_id
+                        ),
+                        None,
                     )
-                    
+
                     if model_name:
                         for chunk_index, chunk_text in enumerate(chunks):
-                            embedding = await self.create_embedding(chunk_text, model_name)
+                            embedding = await self.create_embedding(
+                                chunk_text, model_name
+                            )
                             # Convert list to pgvector format: '[0.1, 0.2, ...]' when using raw sql.
-                            embedding_str = '[' + ','.join(map(str, embedding)) + ']'
+                            embedding_str = "[" + ",".join(map(str, embedding)) + "]"
 
                             await conn.execute(
                                 """
@@ -436,50 +472,65 @@ class VectorDatabase:
                                 (document_id, embedding_model_id, embedding, chunk_text, chunk_index, total_chunks)
                                 VALUES ($1, $2, $3::vector, $4, $5, $6)
                                 """,
-                                document_id, model_id, embedding_str, chunk_text, chunk_index, total_chunks
+                                document_id,
+                                model_id,
+                                embedding_str,
+                                chunk_text,
+                                chunk_index,
+                                total_chunks,
                             )
-        
+
         return True
-    
+
     def delete_document(self, document_id: str, soft_delete: bool = True) -> bool:
         """Delete document (soft or hard delete)"""
         if soft_delete:
-            self.supabase.table('documents').update({
-                'deleted_at': datetime.now().isoformat(),
-                'is_current': False
-            }).eq('id', document_id).execute()
+            self.supabase.table("documents").update(
+                {"deleted_at": datetime.now().isoformat(), "is_current": False}
+            ).eq("id", document_id).execute()
         else:
-            self.supabase.table('documents').delete().eq('id', document_id).execute()
-        
+            self.supabase.table("documents").delete().eq("id", document_id).execute()
+
         return True
-    
+
     def get_document(self, document_id: str) -> Optional[Dict]:
         """Get document by ID"""
-        result = self.supabase.table('documents').select('*').eq('id', document_id).execute()
+        result = (
+            self.supabase.table("documents").select("*").eq("id", document_id).execute()
+        )
         return result.data[0] if result.data else None
-    
+
     def get_documents(
         self,
         user_id: str,
         tags: Optional[List[str]] = None,
         limit: int = 100,
-        offset: int = 0
+        offset: int = 0,
     ) -> List[Dict]:
         """Get documents with optional filtering"""
-        query = self.supabase.table('documents').select(
-            '*'
-        ).eq('user_id', user_id).eq('is_current', True).is_('deleted_at', 'null')
-        
+        query = (
+            self.supabase.table("documents")
+            .select("*")
+            .eq("user_id", user_id)
+            .eq("is_current", True)
+            .is_("deleted_at", "null")
+        )
+
         if tags:
-            query = query.overlaps('tags', tags)
-        
-        result = query.order('created_at', desc=True).limit(limit).range(offset, offset + limit - 1).execute()
+            query = query.overlaps("tags", tags)
+
+        result = (
+            query.order("created_at", desc=True)
+            .limit(limit)
+            .range(offset, offset + limit - 1)
+            .execute()
+        )
         return result.data
-    
+
     # ========================================================================
     # SQL FUNCTION: upsert_document_with_embedding
     # ========================================================================
-    
+
     async def upsert_document_with_embedding_rpc_function(
         self,
         user_id: str,
@@ -487,33 +538,36 @@ class VectorDatabase:
         content: str,
         metadata: Dict = None,
         tags: List[str] = None,
-        model_name: str = 'nomic-embed-text-768',
-        chunks: List[Dict] = None
+        model_name: str = "nomic-embed-text-768",
+        chunks: List[Dict] = None,
     ) -> str:
         """
         Call SQL function to upsert document with embeddings.
-        
+
         Args:
             chunks: List of dicts with 'text', 'embedding', 'chunk_index'
         """
         chunks_json = chunks or []
-        
-        result = self.supabase.rpc('upsert_document_with_embedding', {
-            'p_user_id': user_id,
-            'p_title': title,
-            'p_content': content,
-            'p_metadata': metadata or {},
-            'p_tags': tags or [],
-            'p_embedding_model_name': model_name,
-            'p_chunks': json.dumps(chunks_json)
-        }).execute()
-        
+
+        result = self.supabase.rpc(
+            "upsert_document_with_embedding",
+            {
+                "p_user_id": user_id,
+                "p_title": title,
+                "p_content": content,
+                "p_metadata": metadata or {},
+                "p_tags": tags or [],
+                "p_embedding_model_name": model_name,
+                "p_chunks": json.dumps(chunks_json),
+            },
+        ).execute()
+
         return result.data
-    
+
     # ========================================================================
     # ARTICLE OPERATIONS
     # ========================================================================
-    
+
     async def add_article(
         self,
         user_id: str,
@@ -523,17 +577,19 @@ class VectorDatabase:
         excerpt: Optional[str] = None,
         tags: List[str] = None,
         category: Optional[str] = None,
-        status: str = 'draft',
+        status: str = "draft",
         seo_title: Optional[str] = None,
         seo_description: Optional[str] = None,
         og_image: Optional[str] = None,
         model_names: List[str] = None,
         chunk_size: int = 500,
-        chunk_overlap: int = 50
+        chunk_overlap: int = 50,
     ) -> Dict[str, str]:
         """Add article with document and embeddings using database transaction"""
         if not self.pg_pool:
-            raise RuntimeError("PostgreSQL pool not initialized. Call init_pool() first.")
+            raise RuntimeError(
+                "PostgreSQL pool not initialized. Call init_pool() first."
+            )
 
         if model_names is None:
             model_names = list(self._models_cache.keys())
@@ -545,7 +601,7 @@ class VectorDatabase:
             async with conn.transaction():
                 # Generate unique slug (check for duplicates within transaction)
                 slug = await self._create_unique_slug(title, conn, user_id)
-                
+
                 # Insert document
                 document_id = await conn.fetchval(
                     """
@@ -553,9 +609,11 @@ class VectorDatabase:
                     VALUES ($1, $2, $3, $4, $5)
                     RETURNING id
                     """,
-                    user_id, title, content,
-                    json.dumps({'source': 'article', 'category': category}),
-                    tags or []
+                    user_id,
+                    title,
+                    content,
+                    json.dumps({"source": "article", "category": category}),
+                    tags or [],
                 )
 
                 # Create embeddings
@@ -565,7 +623,7 @@ class VectorDatabase:
                     for chunk_index, chunk_text in enumerate(chunks):
                         embedding = await self.create_embedding(chunk_text, model_name)
                         # Convert list to pgvector format: '[0.1, 0.2, ...]'
-                        embedding_str = '[' + ','.join(map(str, embedding)) + ']'
+                        embedding_str = "[" + ",".join(map(str, embedding)) + "]"
 
                         await conn.execute(
                             """
@@ -573,7 +631,12 @@ class VectorDatabase:
                             (document_id, embedding_model_id, embedding, chunk_text, chunk_index, total_chunks)
                             VALUES ($1, $2, $3::vector, $4, $5, $6)
                             """,
-                            document_id, model.id, embedding_str, chunk_text, chunk_index, total_chunks
+                            document_id,
+                            model.id,
+                            embedding_str,
+                            chunk_text,
+                            chunk_index,
+                            total_chunks,
                         )
 
                 # Insert article
@@ -585,16 +648,24 @@ class VectorDatabase:
                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
                     RETURNING id
                     """,
-                    user_id, document_id, title, subtitle, content, excerpt or content[:200],
-                    tags or [], category, status, slug, seo_title, seo_description, og_image,
-                    datetime.now() if status == 'published' else None
+                    user_id,
+                    document_id,
+                    title,
+                    subtitle,
+                    content,
+                    excerpt or content[:200],
+                    tags or [],
+                    category,
+                    status,
+                    slug,
+                    seo_title,
+                    seo_description,
+                    og_image,
+                    datetime.now() if status == "published" else None,
                 )
-        
-        return {
-                    'article_id': article_id,
-            'document_id': document_id
-        }
-    
+
+        return {"article_id": article_id, "document_id": document_id}
+
     async def update_article(
         self,
         article_id: str,
@@ -610,23 +681,24 @@ class VectorDatabase:
         og_image: Optional[str] = None,
         recreate_embeddings: bool = True,
         chunk_size: int = 500,
-        chunk_overlap: int = 50
+        chunk_overlap: int = 50,
     ) -> bool:
         """Update article and optionally recreate embeddings using database transaction"""
         if not self.pg_pool:
-            raise RuntimeError("PostgreSQL pool not initialized. Call init_pool() first.")
+            raise RuntimeError(
+                "PostgreSQL pool not initialized. Call init_pool() first."
+            )
 
         async with self.pg_pool.acquire() as conn:
             async with conn.transaction():
                 # Get document_id
                 result = await conn.fetchrow(
-                    "SELECT document_id FROM articles WHERE id = $1",
-                    article_id
+                    "SELECT document_id FROM articles WHERE id = $1", article_id
                 )
                 if not result:
                     raise ValueError(f"Article {article_id} not found")
-                
-                document_id = result['document_id']
+
+                document_id = result["document_id"]
                 # Update article
                 article_update_parts = []
                 article_params = []
@@ -666,7 +738,7 @@ class VectorDatabase:
                     article_update_parts.append(f"status = ${param_count}")
                     article_params.append(status)
                     param_count += 1
-                    if status == 'published':
+                    if status == "published":
                         article_update_parts.append(f"published_at = ${param_count}")
                         article_params.append(datetime.now())
                         param_count += 1
@@ -693,12 +765,12 @@ class VectorDatabase:
                     await conn.execute(
                         f"""
                         UPDATE articles
-                        SET {', '.join(article_update_parts)}
+                        SET {", ".join(article_update_parts)}
                         WHERE id = ${param_count}
                         """,
-                        *article_params
+                        *article_params,
                     )
-        
+
                 # Update document
                 doc_update_parts = []
                 doc_params = []
@@ -726,23 +798,22 @@ class VectorDatabase:
                     await conn.execute(
                         f"""
                         UPDATE documents
-                        SET {', '.join(doc_update_parts)}
+                        SET {", ".join(doc_update_parts)}
                         WHERE id = ${param_count}
                         """,
-                        *doc_params
+                        *doc_params,
                     )
 
                 # Recreate embeddings if needed
                 if recreate_embeddings and content is not None:
                     existing = await conn.fetch(
                         "SELECT DISTINCT embedding_model_id FROM embeddings WHERE document_id = $1",
-                        document_id
+                        document_id,
                     )
-                    model_ids = [row['embedding_model_id'] for row in existing]
+                    model_ids = [row["embedding_model_id"] for row in existing]
 
                     await conn.execute(
-                        "DELETE FROM embeddings WHERE document_id = $1",
-                        document_id
+                        "DELETE FROM embeddings WHERE document_id = $1", document_id
                     )
 
                     chunks = self._chunk_text(content, chunk_size, chunk_overlap)
@@ -750,15 +821,23 @@ class VectorDatabase:
 
                     for model_id in model_ids:
                         model_name = next(
-                            (name for name, m in self._models_cache.items() if m.id == model_id),
-                            None
+                            (
+                                name
+                                for name, m in self._models_cache.items()
+                                if m.id == model_id
+                            ),
+                            None,
                         )
 
                         if model_name:
                             for chunk_index, chunk_text in enumerate(chunks):
-                                embedding = await self.create_embedding(chunk_text, model_name)
+                                embedding = await self.create_embedding(
+                                    chunk_text, model_name
+                                )
                                 # Convert list to pgvector format: '[0.1, 0.2, ...]'
-                                embedding_str = '[' + ','.join(map(str, embedding)) + ']'
+                                embedding_str = (
+                                    "[" + ",".join(map(str, embedding)) + "]"
+                                )
 
                                 await conn.execute(
                                     """
@@ -766,30 +845,43 @@ class VectorDatabase:
                                     (document_id, embedding_model_id, embedding, chunk_text, chunk_index, total_chunks)
                                     VALUES ($1, $2, $3::vector, $4, $5, $6)
                                     """,
-                                    document_id, model_id, embedding_str, chunk_text, chunk_index, total_chunks
-        )
-        
+                                    document_id,
+                                    model_id,
+                                    embedding_str,
+                                    chunk_text,
+                                    chunk_index,
+                                    total_chunks,
+                                )
+
         return True
-    
+
     def delete_article(self, article_id: str, soft_delete: bool = True) -> bool:
         """Delete article and associated document"""
-        article = self.supabase.table('articles').select('document_id').eq('id', article_id).single().execute()
-        
+        article = (
+            self.supabase.table("articles")
+            .select("document_id")
+            .eq("id", article_id)
+            .single()
+            .execute()
+        )
+
         if article.data:
-            self.delete_document(article.data['document_id'], soft_delete=soft_delete)
-        
+            self.delete_document(article.data["document_id"], soft_delete=soft_delete)
+
         return True
-    
+
     def get_article(self, article_id: str) -> Optional[Dict]:
         """Get article by ID"""
-        result = self.supabase.table('articles').select('*').eq('id', article_id).execute()
+        result = (
+            self.supabase.table("articles").select("*").eq("id", article_id).execute()
+        )
         return result.data[0] if result.data else None
-    
+
     def get_article_by_slug(self, slug: str) -> Optional[Dict]:
         """Get article by slug"""
-        result = self.supabase.table('articles').select('*').eq('slug', slug).execute()
+        result = self.supabase.table("articles").select("*").eq("slug", slug).execute()
         return result.data[0] if result.data else None
-    
+
     def get_articles(
         self,
         user_id: str,
@@ -797,49 +889,61 @@ class VectorDatabase:
         category: Optional[str] = None,
         tags: Optional[List[str]] = None,
         limit: int = 100,
-        offset: int = 0
+        offset: int = 0,
     ) -> List[Dict]:
         """Get articles with optional filtering"""
-        query = self.supabase.table('articles').select('*').eq('user_id', user_id)
-        
+        query = self.supabase.table("articles").select("*").eq("user_id", user_id)
+
         if status:
-            query = query.eq('status', status)
+            query = query.eq("status", status)
         if category:
-            query = query.eq('category', category)
+            query = query.eq("category", category)
         if tags:
-            query = query.overlaps('tags', tags)
-        
-        result = query.order('created_at', desc=True).limit(limit).range(offset, offset + limit - 1).execute()
+            query = query.overlaps("tags", tags)
+
+        result = (
+            query.order("created_at", desc=True)
+            .limit(limit)
+            .range(offset, offset + limit - 1)
+            .execute()
+        )
         return result.data
-    
+
     def increment_article_views(self, article_id: str) -> bool:
         """Increment article view count"""
         article = self.get_article(article_id)
         if article:
-            self.supabase.table('articles').update({
-                'view_count': article.get('view_count', 0) + 1
-            }).eq('id', article_id).execute()
+            self.supabase.table("articles").update(
+                {"view_count": article.get("view_count", 0) + 1}
+            ).eq("id", article_id).execute()
             return True
         return False
-    
+
     def increment_article_likes(self, article_id: str) -> bool:
         """Increment article like count"""
         article = self.get_article(article_id)
         if article:
-            self.supabase.table('articles').update({
-                'like_count': article.get('like_count', 0) + 1
-            }).eq('id', article_id).execute()
+            self.supabase.table("articles").update(
+                {"like_count": article.get("like_count", 0) + 1}
+            ).eq("id", article_id).execute()
             return True
         return False
-    
+
     # ========================================================================
     # PROFILE DATA OPERATIONS
     # ========================================================================
-    
+
     async def add_profile_data(
         self,
         user_id: str,
-        category: Literal['work_experience', 'education', 'certification', 'skill', 'project', 'volunteer'],
+        category: Literal[
+            "work_experience",
+            "education",
+            "certification",
+            "skill",
+            "project",
+            "volunteer",
+        ],
         data: Dict,
         searchable: bool = True,
         start_date: Optional[str] = None,
@@ -849,11 +953,13 @@ class VectorDatabase:
         display_order: Optional[int] = None,
         model_names: List[str] = None,
         chunk_size: int = 500,
-        chunk_overlap: int = 50
+        chunk_overlap: int = 50,
     ) -> Dict[str, str]:
         """Add profile data with optional document/embedding using database transaction"""
         if not self.pg_pool:
-            raise RuntimeError("PostgreSQL pool not initialized. Call init_pool() first.")
+            raise RuntimeError(
+                "PostgreSQL pool not initialized. Call init_pool() first."
+            )
 
         if model_names is None:
             model_names = list(self._models_cache.keys())
@@ -862,9 +968,11 @@ class VectorDatabase:
             async with conn.transaction():
                 # Insert profile data
                 # Convert string dates to date objects for asyncpg
-                parsed_start_date = self._parse_date(start_date or data.get('start_date'))
-                parsed_end_date = self._parse_date(end_date or data.get('end_date'))
-                
+                parsed_start_date = self._parse_date(
+                    start_date or data.get("start_date")
+                )
+                parsed_end_date = self._parse_date(end_date or data.get("end_date"))
+
                 profile_id = await conn.fetchval(
                     """
                     INSERT INTO profile_data
@@ -872,11 +980,14 @@ class VectorDatabase:
                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                     RETURNING id
                     """,
-                    user_id, category, json.dumps(data),
+                    user_id,
+                    category,
+                    json.dumps(data),
                     parsed_start_date,
                     parsed_end_date,
-                    is_current or data.get('current', False),
-                    is_featured, display_order
+                    is_current or data.get("current", False),
+                    is_featured,
+                    display_order,
                 )
 
                 document_id = None
@@ -884,7 +995,9 @@ class VectorDatabase:
                 if searchable:
                     # Generate searchable_text in Python (profile_data table doesn't have searchable_text column)
                     # This replicates the trigger logic from update_profile_data_searchable_text()
-                    searchable_text = self._generate_searchable_text_from_profile_data(data)
+                    searchable_text = self._generate_searchable_text_from_profile_data(
+                        data
+                    )
 
                     # Insert document
                     document_id = await conn.fetchval(
@@ -893,22 +1006,34 @@ class VectorDatabase:
                         VALUES ($1, $2, $3, $4, $5)
                         RETURNING id
                         """,
-                        user_id, data.get('title', category), searchable_text,
-                        json.dumps({'source': 'profile_data', 'category': category, 'profile_data': data}),
-                        [category]
+                        user_id,
+                        data.get("title", category),
+                        searchable_text,
+                        json.dumps(
+                            {
+                                "source": "profile_data",
+                                "category": category,
+                                "profile_data": data,
+                            }
+                        ),
+                        [category],
                     )
 
                     # Create embeddings
-                    chunks = self._chunk_text(searchable_text, chunk_size, chunk_overlap)
+                    chunks = self._chunk_text(
+                        searchable_text, chunk_size, chunk_overlap
+                    )
                     total_chunks = len(chunks)
 
                     for model_name in model_names:
                         model = self._models_cache[model_name]
 
                         for chunk_index, chunk_text in enumerate(chunks):
-                            embedding = await self.create_embedding(chunk_text, model_name)
+                            embedding = await self.create_embedding(
+                                chunk_text, model_name
+                            )
                             # Convert list to pgvector format: '[0.1, 0.2, ...]'
-                            embedding_str = '[' + ','.join(map(str, embedding)) + ']'
+                            embedding_str = "[" + ",".join(map(str, embedding)) + "]"
 
                             await conn.execute(
                                 """
@@ -916,20 +1041,23 @@ class VectorDatabase:
                                 (document_id, embedding_model_id, embedding, chunk_text, chunk_index, total_chunks)
                                 VALUES ($1, $2, $3::vector, $4, $5, $6)
                                 """,
-                                document_id, model.id, embedding_str, chunk_text, chunk_index, total_chunks
+                                document_id,
+                                model.id,
+                                embedding_str,
+                                chunk_text,
+                                chunk_index,
+                                total_chunks,
                             )
 
                     # Update profile_data with document_id
                     await conn.execute(
                         "UPDATE profile_data SET document_id = $1 WHERE id = $2",
-                        document_id, profile_id
+                        document_id,
+                        profile_id,
                     )
 
-                return {
-                    'profile_id': profile_id,
-                'document_id': document_id
-                }
-    
+                return {"profile_id": profile_id, "document_id": document_id}
+
     async def update_profile_data(
         self,
         profile_id: str,
@@ -941,25 +1069,31 @@ class VectorDatabase:
         display_order: Optional[int] = None,
         recreate_embeddings: bool = True,
         chunk_size: int = 500,
-        chunk_overlap: int = 50
+        chunk_overlap: int = 50,
     ) -> bool:
         """Update profile data and optionally recreate embeddings using database transaction"""
         if not self.pg_pool:
-            raise RuntimeError("PostgreSQL pool not initialized. Call init_pool() first.")
+            raise RuntimeError(
+                "PostgreSQL pool not initialized. Call init_pool() first."
+            )
 
         async with self.pg_pool.acquire() as conn:
             async with conn.transaction():
                 # Get current profile data
                 profile = await conn.fetchrow(
                     "SELECT data, document_id FROM profile_data WHERE id = $1",
-                    profile_id
+                    profile_id,
                 )
 
                 if not profile:
                     raise ValueError(f"Profile data {profile_id} not found")
-        
-                current_data = json.loads(profile['data']) if isinstance(profile['data'], str) else profile['data']
-                document_id = profile['document_id']
+
+                current_data = (
+                    json.loads(profile["data"])
+                    if isinstance(profile["data"], str)
+                    else profile["data"]
+                )
+                document_id = profile["document_id"]
 
                 # Build update query
                 update_parts = []
@@ -1004,56 +1138,71 @@ class VectorDatabase:
                     await conn.execute(
                         f"""
                         UPDATE profile_data
-                        SET {', '.join(update_parts)}
+                        SET {", ".join(update_parts)}
                         WHERE id = ${param_count}
                         """,
-                        *params
+                        *params,
                     )
 
                 # Recreate embeddings if needed
                 if document_id and recreate_embeddings and data:
                     # Get updated data and generate searchable_text in Python
                     updated_profile = await conn.fetchrow(
-                        "SELECT data FROM profile_data WHERE id = $1",
-                        profile_id
+                        "SELECT data FROM profile_data WHERE id = $1", profile_id
                     )
-                    updated_data = json.loads(updated_profile['data']) if isinstance(updated_profile['data'], str) else updated_profile['data']
-                    searchable_text = self._generate_searchable_text_from_profile_data(updated_data)
+                    updated_data = (
+                        json.loads(updated_profile["data"])
+                        if isinstance(updated_profile["data"], str)
+                        else updated_profile["data"]
+                    )
+                    searchable_text = self._generate_searchable_text_from_profile_data(
+                        updated_data
+                    )
 
                     # Update document content
                     await conn.execute(
                         "UPDATE documents SET content = $1, updated_at = NOW() WHERE id = $2",
-                        searchable_text, document_id
+                        searchable_text,
+                        document_id,
                     )
 
                     # Get existing embedding model IDs
                     existing = await conn.fetch(
                         "SELECT DISTINCT embedding_model_id FROM embeddings WHERE document_id = $1",
-                        document_id
+                        document_id,
                     )
-                    model_ids = [row['embedding_model_id'] for row in existing]
+                    model_ids = [row["embedding_model_id"] for row in existing]
 
                     # Delete old embeddings
                     await conn.execute(
-                        "DELETE FROM embeddings WHERE document_id = $1",
-                        document_id
+                        "DELETE FROM embeddings WHERE document_id = $1", document_id
                     )
 
                     # Create new embeddings
-                    chunks = self._chunk_text(searchable_text, chunk_size, chunk_overlap)
+                    chunks = self._chunk_text(
+                        searchable_text, chunk_size, chunk_overlap
+                    )
                     total_chunks = len(chunks)
 
                     for model_id in model_ids:
                         model_name = next(
-                            (name for name, m in self._models_cache.items() if m.id == model_id),
-                            None
+                            (
+                                name
+                                for name, m in self._models_cache.items()
+                                if m.id == model_id
+                            ),
+                            None,
                         )
 
                         if model_name:
                             for chunk_index, chunk_text in enumerate(chunks):
-                                embedding = await self.create_embedding(chunk_text, model_name)
+                                embedding = await self.create_embedding(
+                                    chunk_text, model_name
+                                )
                                 # Convert list to pgvector format: '[0.1, 0.2, ...]'
-                                embedding_str = '[' + ','.join(map(str, embedding)) + ']'
+                                embedding_str = (
+                                    "[" + ",".join(map(str, embedding)) + "]"
+                                )
 
                                 await conn.execute(
                                     """
@@ -1061,27 +1210,43 @@ class VectorDatabase:
                                     (document_id, embedding_model_id, embedding, chunk_text, chunk_index, total_chunks)
                                     VALUES ($1, $2, $3::vector, $4, $5, $6)
                                     """,
-                                    document_id, model_id, embedding_str, chunk_text, chunk_index, total_chunks
-            )
-        
+                                    document_id,
+                                    model_id,
+                                    embedding_str,
+                                    chunk_text,
+                                    chunk_index,
+                                    total_chunks,
+                                )
+
         return True
-    
+
     def delete_profile_data(self, profile_id: str) -> bool:
         """Delete profile data"""
-        profile = self.supabase.table('profile_data').select('document_id').eq('id', profile_id).single().execute()
-        
-        if profile.data and profile.data['document_id']:
-            self.delete_document(profile.data['document_id'], soft_delete=False)
+        profile = (
+            self.supabase.table("profile_data")
+            .select("document_id")
+            .eq("id", profile_id)
+            .single()
+            .execute()
+        )
+
+        if profile.data and profile.data["document_id"]:
+            self.delete_document(profile.data["document_id"], soft_delete=False)
         else:
-            self.supabase.table('profile_data').delete().eq('id', profile_id).execute()
-        
+            self.supabase.table("profile_data").delete().eq("id", profile_id).execute()
+
         return True
-    
+
     def get_profile_data(self, profile_id: str) -> Optional[Dict]:
         """Get profile data by ID"""
-        result = self.supabase.table('profile_data').select('*').eq('id', profile_id).execute()
+        result = (
+            self.supabase.table("profile_data")
+            .select("*")
+            .eq("id", profile_id)
+            .execute()
+        )
         return result.data[0] if result.data else None
-    
+
     def get_profile_data_list(
         self,
         user_id: str,
@@ -1089,29 +1254,37 @@ class VectorDatabase:
         is_current: Optional[bool] = None,
         is_featured: Optional[bool] = None,
         limit: int = 100,
-        offset: int = 0
+        offset: int = 0,
     ) -> List[Dict]:
         """Get profile data with optional filtering"""
-        query = self.supabase.table('profile_data').select('*').eq('user_id', user_id)
-        
+        query = self.supabase.table("profile_data").select("*").eq("user_id", user_id)
+
         if category:
-            query = query.eq('category', category)
+            query = query.eq("category", category)
         if is_current is not None:
-            query = query.eq('is_current', is_current)
+            query = query.eq("is_current", is_current)
         if is_featured is not None:
-            query = query.eq('is_featured', is_featured)
-        
-        result = query.order('display_order', desc=False).order('created_at', desc=True).limit(limit).range(offset, offset + limit - 1).execute()
+            query = query.eq("is_featured", is_featured)
+
+        result = (
+            query.order("display_order", desc=False)
+            .order("created_at", desc=True)
+            .limit(limit)
+            .range(offset, offset + limit - 1)
+            .execute()
+        )
         return result.data
-    
+
     # ========================================================================
     # PERSONAL ATTRIBUTES OPERATIONS
     # ========================================================================
-    
+
     async def add_personal_attribute(
         self,
         user_id: str,
-        attribute_type: Literal['soft_skill', 'value', 'worldview', 'aspiration', 'principle'],
+        attribute_type: Literal[
+            "soft_skill", "value", "worldview", "aspiration", "principle"
+        ],
         title: str,
         description: str,
         examples: List[str] = None,
@@ -1122,11 +1295,13 @@ class VectorDatabase:
         searchable: bool = True,
         model_names: List[str] = None,
         chunk_size: int = 500,
-        chunk_overlap: int = 50
+        chunk_overlap: int = 50,
     ) -> Dict[str, str]:
         """Add personal attribute with optional document/embedding using database transaction"""
         if not self.pg_pool:
-            raise RuntimeError("PostgreSQL pool not initialized. Call init_pool() first.")
+            raise RuntimeError(
+                "PostgreSQL pool not initialized. Call init_pool() first."
+            )
 
         if model_names is None:
             model_names = list(self._models_cache.keys())
@@ -1142,8 +1317,15 @@ class VectorDatabase:
                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
                     RETURNING id
                     """,
-                    user_id, attribute_type, title, description, examples or [],
-                    importance_score, confidence_level, related_articles or [], related_experiences or []
+                    user_id,
+                    attribute_type,
+                    title,
+                    description,
+                    examples or [],
+                    importance_score,
+                    confidence_level,
+                    related_articles or [],
+                    related_experiences or [],
                 )
 
                 document_id = None
@@ -1152,9 +1334,9 @@ class VectorDatabase:
                     # Get searchable_text
                     searchable_text_row = await conn.fetchrow(
                         "SELECT searchable_text FROM personal_attributes WHERE id = $1",
-                        attribute_id
+                        attribute_id,
                     )
-                    searchable_text = searchable_text_row['searchable_text']
+                    searchable_text = searchable_text_row["searchable_text"]
 
                     # Insert document
                     document_id = await conn.fetchval(
@@ -1163,27 +1345,35 @@ class VectorDatabase:
                         VALUES ($1, $2, $3, $4, $5)
                         RETURNING id
                         """,
-                        user_id, title, searchable_text,
-                        json.dumps({
-                    'source': 'personal_attribute',
-                    'attribute_type': attribute_type,
-                    'importance_score': importance_score,
-                    'confidence_level': confidence_level
-                        }),
-                        [attribute_type]
+                        user_id,
+                        title,
+                        searchable_text,
+                        json.dumps(
+                            {
+                                "source": "personal_attribute",
+                                "attribute_type": attribute_type,
+                                "importance_score": importance_score,
+                                "confidence_level": confidence_level,
+                            }
+                        ),
+                        [attribute_type],
                     )
 
                     # Create embeddings
-                    chunks = self._chunk_text(searchable_text, chunk_size, chunk_overlap)
+                    chunks = self._chunk_text(
+                        searchable_text, chunk_size, chunk_overlap
+                    )
                     total_chunks = len(chunks)
 
                     for model_name in model_names:
                         model = self._models_cache[model_name]
 
                         for chunk_index, chunk_text in enumerate(chunks):
-                            embedding = await self.create_embedding(chunk_text, model_name)
+                            embedding = await self.create_embedding(
+                                chunk_text, model_name
+                            )
                             # Convert list to pgvector format: '[0.1, 0.2, ...]'
-                            embedding_str = '[' + ','.join(map(str, embedding)) + ']'
+                            embedding_str = "[" + ",".join(map(str, embedding)) + "]"
 
                             await conn.execute(
                                 """
@@ -1191,24 +1381,27 @@ class VectorDatabase:
                                 (document_id, embedding_model_id, embedding, chunk_text, chunk_index, total_chunks)
                                 VALUES ($1, $2, $3::vector, $4, $5, $6)
                                 """,
-                                document_id, model.id, embedding_str, chunk_text, chunk_index, total_chunks
+                                document_id,
+                                model.id,
+                                embedding_str,
+                                chunk_text,
+                                chunk_index,
+                                total_chunks,
                             )
 
                     # Update personal_attributes with document_id
                     await conn.execute(
                         "UPDATE personal_attributes SET document_id = $1 WHERE id = $2",
-                        document_id, attribute_id
+                        document_id,
+                        attribute_id,
                     )
 
-                return {
-                    'attribute_id': attribute_id,
-                'document_id': document_id
-                }
-    
+                return {"attribute_id": attribute_id, "document_id": document_id}
+
     # ========================================================================
     # SQL FUNCTION: add_personal_attribute
     # ========================================================================
-    
+
     def add_personal_attribute_rpc_function(
         self,
         user_id: str,
@@ -1220,33 +1413,36 @@ class VectorDatabase:
         confidence_level: Optional[int] = None,
         related_articles: List[str] = None,
         related_experiences: List[str] = None,
-        model_name: str = 'nomic-embed-text-768',
-        create_searchable: bool = True
+        model_name: str = "nomic-embed-text-768",
+        create_searchable: bool = True,
     ) -> str:
         """
         Call SQL function to add personal attribute.
         Returns attribute_id.
         """
-        result = self.supabase.rpc('add_personal_attribute', {
-            'p_user_id': user_id,
-            'p_attribute_type': attribute_type,
-            'p_title': title,
-            'p_description': description,
-            'p_examples': examples or [],
-            'p_importance_score': importance_score,
-            'p_confidence_level': confidence_level,
-            'p_related_articles': related_articles or [],
-            'p_related_experiences': related_experiences or [],
-            'p_embedding_model_name': model_name,
-            'p_create_searchable': create_searchable
-        }).execute()
-        
+        result = self.supabase.rpc(
+            "add_personal_attribute",
+            {
+                "p_user_id": user_id,
+                "p_attribute_type": attribute_type,
+                "p_title": title,
+                "p_description": description,
+                "p_examples": examples or [],
+                "p_importance_score": importance_score,
+                "p_confidence_level": confidence_level,
+                "p_related_articles": related_articles or [],
+                "p_related_experiences": related_experiences or [],
+                "p_embedding_model_name": model_name,
+                "p_create_searchable": create_searchable,
+            },
+        ).execute()
+
         return result.data
-    
+
     # ========================================================================
     # SQL FUNCTION: update_personal_attribute
     # ========================================================================
-    
+
     def update_personal_attribute_rpc_function(
         self,
         attribute_id: str,
@@ -1257,26 +1453,29 @@ class VectorDatabase:
         confidence_level: Optional[int] = None,
         related_articles: Optional[List[str]] = None,
         related_experiences: Optional[List[str]] = None,
-        recreate_embedding: bool = True
+        recreate_embedding: bool = True,
     ) -> bool:
         """
         Call SQL function to update personal attribute.
         Returns success boolean.
         """
-        result = self.supabase.rpc('update_personal_attribute', {
-            'p_attribute_id': attribute_id,
-            'p_title': title,
-            'p_description': description,
-            'p_examples': examples,
-            'p_importance_score': importance_score,
-            'p_confidence_level': confidence_level,
-            'p_related_articles': related_articles,
-            'p_related_experiences': related_experiences,
-            'p_recreate_embedding': recreate_embedding
-        }).execute()
-        
+        result = self.supabase.rpc(
+            "update_personal_attribute",
+            {
+                "p_attribute_id": attribute_id,
+                "p_title": title,
+                "p_description": description,
+                "p_examples": examples,
+                "p_importance_score": importance_score,
+                "p_confidence_level": confidence_level,
+                "p_related_articles": related_articles,
+                "p_related_experiences": related_experiences,
+                "p_recreate_embedding": recreate_embedding,
+            },
+        ).execute()
+
         return result.data
-    
+
     async def update_personal_attribute(
         self,
         attribute_id: str,
@@ -1289,24 +1488,26 @@ class VectorDatabase:
         related_experiences: Optional[List[str]] = None,
         recreate_embeddings: bool = True,
         chunk_size: int = 500,
-        chunk_overlap: int = 50
+        chunk_overlap: int = 50,
     ) -> bool:
         """Update personal attribute using database transaction"""
         if not self.pg_pool:
-            raise RuntimeError("PostgreSQL pool not initialized. Call init_pool() first.")
+            raise RuntimeError(
+                "PostgreSQL pool not initialized. Call init_pool() first."
+            )
 
         async with self.pg_pool.acquire() as conn:
             async with conn.transaction():
-        # Get current attribute
+                # Get current attribute
                 attr = await conn.fetchrow(
                     "SELECT document_id FROM personal_attributes WHERE id = $1",
-                    attribute_id
+                    attribute_id,
                 )
-        
+
                 if not attr:
                     raise ValueError(f"Personal attribute {attribute_id} not found")
-        
-                document_id = attr['document_id']
+
+                document_id = attr["document_id"]
 
                 # Build update query
                 update_parts = []
@@ -1355,56 +1556,71 @@ class VectorDatabase:
                     await conn.execute(
                         f"""
                         UPDATE personal_attributes
-                        SET {', '.join(update_parts)}
+                        SET {", ".join(update_parts)}
                         WHERE id = ${param_count}
                         """,
-                        *params
+                        *params,
                     )
 
                 # Recreate embeddings if needed
-                if document_id and recreate_embeddings and (title or description or examples):
+                if (
+                    document_id
+                    and recreate_embeddings
+                    and (title or description or examples)
+                ):
                     # Get updated searchable_text and title
                     updated_attr = await conn.fetchrow(
                         "SELECT searchable_text, title FROM personal_attributes WHERE id = $1",
-                        attribute_id
+                        attribute_id,
                     )
-                    searchable_text = updated_attr['searchable_text']
-                    new_title = updated_attr['title']
+                    searchable_text = updated_attr["searchable_text"]
+                    new_title = updated_attr["title"]
 
                     # Update document
                     await conn.execute(
                         "UPDATE documents SET title = $1, content = $2, updated_at = NOW() WHERE id = $3",
-                        new_title, searchable_text, document_id
+                        new_title,
+                        searchable_text,
+                        document_id,
                     )
 
                     # Get existing embedding model IDs
                     existing = await conn.fetch(
                         "SELECT DISTINCT embedding_model_id FROM embeddings WHERE document_id = $1",
-                        document_id
+                        document_id,
                     )
-                    model_ids = [row['embedding_model_id'] for row in existing]
+                    model_ids = [row["embedding_model_id"] for row in existing]
 
                     # Delete old embeddings
                     await conn.execute(
-                        "DELETE FROM embeddings WHERE document_id = $1",
-                        document_id
+                        "DELETE FROM embeddings WHERE document_id = $1", document_id
                     )
 
                     # Create new embeddings
-                    chunks = self._chunk_text(searchable_text, chunk_size, chunk_overlap)
+                    chunks = self._chunk_text(
+                        searchable_text, chunk_size, chunk_overlap
+                    )
                     total_chunks = len(chunks)
 
                     for model_id in model_ids:
                         model_name = next(
-                            (name for name, m in self._models_cache.items() if m.id == model_id),
-                            None
+                            (
+                                name
+                                for name, m in self._models_cache.items()
+                                if m.id == model_id
+                            ),
+                            None,
                         )
 
                         if model_name:
                             for chunk_index, chunk_text in enumerate(chunks):
-                                embedding = await self.create_embedding(chunk_text, model_name)
+                                embedding = await self.create_embedding(
+                                    chunk_text, model_name
+                                )
                                 # Convert list to pgvector format: '[0.1, 0.2, ...]'
-                                embedding_str = '[' + ','.join(map(str, embedding)) + ']'
+                                embedding_str = (
+                                    "[" + ",".join(map(str, embedding)) + "]"
+                                )
 
                                 await conn.execute(
                                     """
@@ -1412,50 +1628,78 @@ class VectorDatabase:
                                     (document_id, embedding_model_id, embedding, chunk_text, chunk_index, total_chunks)
                                     VALUES ($1, $2, $3::vector, $4, $5, $6)
                                     """,
-                                    document_id, model_id, embedding_str, chunk_text, chunk_index, total_chunks
+                                    document_id,
+                                    model_id,
+                                    embedding_str,
+                                    chunk_text,
+                                    chunk_index,
+                                    total_chunks,
                                 )
-        
+
                 return True
-    
+
     def delete_personal_attribute(self, attribute_id: str) -> bool:
         """Delete personal attribute"""
-        attr = self.supabase.table('personal_attributes').select('document_id').eq('id', attribute_id).single().execute()
-        
-        if attr.data and attr.data['document_id']:
-            self.delete_document(attr.data['document_id'], soft_delete=False)
+        attr = (
+            self.supabase.table("personal_attributes")
+            .select("document_id")
+            .eq("id", attribute_id)
+            .single()
+            .execute()
+        )
+
+        if attr.data and attr.data["document_id"]:
+            self.delete_document(attr.data["document_id"], soft_delete=False)
         else:
-            self.supabase.table('personal_attributes').delete().eq('id', attribute_id).execute()
-        
+            self.supabase.table("personal_attributes").delete().eq(
+                "id", attribute_id
+            ).execute()
+
         return True
-    
+
     def get_personal_attribute(self, attribute_id: str) -> Optional[Dict]:
         """Get personal attribute by ID"""
-        result = self.supabase.table('personal_attributes').select('*').eq('id', attribute_id).execute()
+        result = (
+            self.supabase.table("personal_attributes")
+            .select("*")
+            .eq("id", attribute_id)
+            .execute()
+        )
         return result.data[0] if result.data else None
-    
+
     def get_personal_attributes(
         self,
         user_id: str,
         attribute_type: Optional[str] = None,
         min_importance: Optional[int] = None,
         limit: int = 100,
-        offset: int = 0
+        offset: int = 0,
     ) -> List[Dict]:
         """Get personal attributes with optional filtering"""
-        query = self.supabase.table('personal_attributes').select('*').eq('user_id', user_id)
-        
+        query = (
+            self.supabase.table("personal_attributes")
+            .select("*")
+            .eq("user_id", user_id)
+        )
+
         if attribute_type:
-            query = query.eq('attribute_type', attribute_type)
+            query = query.eq("attribute_type", attribute_type)
         if min_importance is not None:
-            query = query.gte('importance_score', min_importance)
-        
-        result = query.order('importance_score', desc=True).order('created_at', desc=True).limit(limit).range(offset, offset + limit - 1).execute()
+            query = query.gte("importance_score", min_importance)
+
+        result = (
+            query.order("importance_score", desc=True)
+            .order("created_at", desc=True)
+            .limit(limit)
+            .range(offset, offset + limit - 1)
+            .execute()
+        )
         return result.data
-    
+
     # ========================================================================
     # SEARCH OPERATIONS (Using SQL Functions)
     # ========================================================================
-    
+
     async def search_rpc_function(
         self,
         query: str,
@@ -1464,12 +1708,12 @@ class VectorDatabase:
         tags: Optional[List[str]] = None,
         threshold: float = 0.7,
         limit: int = 10,
-        model_name: str = 'nomic-embed-text-768'
+        model_name: str = "nomic-embed-text-768",
     ) -> List[Dict]:
         """
         Search across all content using vector similarity.
         Uses the search_documents SQL function via Supabase RPC.
-            
+
         Returns:
             List of Dict with fields including:
             - document_id, article_id, profile_data_id, personal_attribute_id
@@ -1477,57 +1721,63 @@ class VectorDatabase:
             - content_type, category, attribute_type
             - similarity (FLOAT): Cosine similarity score (0-1, higher = more similar)
             - metadata, tags, created_at
-        
+
         Note: Uses Supabase client (single operation) - no transaction needed.
         For multi-operation atomicity, use asyncpg pool with transactions.
         """
         query_embedding = await self.create_embedding(query, model_name)
-        
+
         model = self._models_cache.get(model_name)
         if not model:
             raise ValueError(f"Model {model_name} not found")
-        
+
         # Supabase RPC accepts List[float] directly - it handles conversion to vector type
-        results = self.supabase.rpc('search_documents', {
-            'query_embedding': query_embedding,  # List[float] - Supabase converts to vector
-            'model_id': model.id,
-            'match_threshold': threshold,
-            'match_count': limit,
-            'filter_user_id': user_id,
-            'filter_content_types': content_types,
-            'filter_tags': tags
-        }).execute()
-        
+        results = self.supabase.rpc(
+            "search_documents",
+            {
+                "query_embedding": query_embedding,  # List[float] - Supabase converts to vector
+                "model_id": model.id,
+                "match_threshold": threshold,
+                "match_count": limit,
+                "filter_user_id": user_id,
+                "filter_content_types": content_types,
+                "filter_tags": tags,
+            },
+        ).execute()
+
         # Results include 'similarity' field from SQL function
         return results.data
-    
+
     async def search_all_rpc_function(
         self,
         query: str,
         user_id: str,
         threshold: float = 0.7,
         limit: int = 10,
-        model_name: str = 'nomic-embed-text-768'
+        model_name: str = "nomic-embed-text-768",
     ) -> List[Dict]:
         """
         Simplified search across all content.
         Uses the search_all_content SQL function.
         """
         query_embedding = await self.create_embedding(query, model_name)
-        
-        results = self.supabase.rpc('search_all_content', {
-            'query_embedding': query_embedding,
-            'user_id_filter': user_id,
-            'match_threshold': threshold,
-            'match_count': limit
-        }).execute()
-        
+
+        results = self.supabase.rpc(
+            "search_all_content",
+            {
+                "query_embedding": query_embedding,
+                "user_id_filter": user_id,
+                "match_threshold": threshold,
+                "match_count": limit,
+            },
+        ).execute()
+
         return results.data
-    
+
     # ========================================================================
     # SMART UPDATE OPERATIONS
     # ========================================================================
-    
+
     async def smart_update(
         self,
         user_id: str,
@@ -1535,7 +1785,7 @@ class VectorDatabase:
         new_content: str,
         content_type: Optional[str] = None,
         similarity_threshold: float = 0.85,
-        model_name: str = 'nomic-embed-text-768'
+        model_name: str = "nomic-embed-text-768",
     ) -> Dict[str, any]:
         """Intelligently find and update documents based on semantic similarity"""
         matches = await self.search(
@@ -1544,87 +1794,85 @@ class VectorDatabase:
             content_types=[content_type] if content_type else None,
             threshold=similarity_threshold,
             limit=3,
-            model_name=model_name
+            model_name=model_name,
         )
-        
+
         if not matches:
             return {
-                'success': False,
-                'message': 'No matching documents found',
-                'matches': []
+                "success": False,
+                "message": "No matching documents found",
+                "matches": [],
             }
-        
+
         best_match = matches[0]
-        document_id = best_match['document_id']
-        
+        document_id = best_match["document_id"]
+
         document = self.get_document(document_id)
-        
+
         update_result = await self._apply_smart_update(
-            document=document,
-            best_match=best_match,
-            new_content=new_content
+            document=document, best_match=best_match, new_content=new_content
         )
-        
+
         return {
-            'success': True,
-            'matched_document_id': document_id,
-            'similarity': best_match['similarity'],
-            'content_type': best_match['content_type'],
-            'article_id': best_match.get('article_id'),
-            'profile_data_id': best_match.get('profile_data_id'),
-            'personal_attribute_id': best_match.get('personal_attribute_id'),
-            'update_result': update_result,
-            'all_matches': matches
+            "success": True,
+            "matched_document_id": document_id,
+            "similarity": best_match["similarity"],
+            "content_type": best_match["content_type"],
+            "article_id": best_match.get("article_id"),
+            "profile_data_id": best_match.get("profile_data_id"),
+            "personal_attribute_id": best_match.get("personal_attribute_id"),
+            "update_result": update_result,
+            "all_matches": matches,
         }
-    
+
     async def _apply_smart_update(
-        self,
-        document: Dict,
-        best_match: Dict,
-        new_content: str
+        self, document: Dict, best_match: Dict, new_content: str
     ) -> Dict:
         """Apply update to the appropriate table based on match type"""
-        
-        if best_match.get('article_id'):
+
+        if best_match.get("article_id"):
             await self.update_article(
-                article_id=best_match['article_id'],
+                article_id=best_match["article_id"],
                 content=new_content,
-                recreate_embeddings=True
+                recreate_embeddings=True,
             )
-            return {'type': 'article', 'id': best_match['article_id']}
-        
-        elif best_match.get('profile_data_id'):
-            profile = self.get_profile_data(best_match['profile_data_id'])
-            updated_data = self._merge_profile_data(profile['data'], new_content)
-            
+            return {"type": "article", "id": best_match["article_id"]}
+
+        elif best_match.get("profile_data_id"):
+            profile = self.get_profile_data(best_match["profile_data_id"])
+            updated_data = self._merge_profile_data(profile["data"], new_content)
+
             await self.update_profile_data(
-                profile_id=best_match['profile_data_id'],
+                profile_id=best_match["profile_data_id"],
                 data=updated_data,
-                recreate_embeddings=True
+                recreate_embeddings=True,
             )
-            return {'type': 'profile_data', 'id': best_match['profile_data_id']}
-        
-        elif best_match.get('personal_attribute_id'):
+            return {"type": "profile_data", "id": best_match["profile_data_id"]}
+
+        elif best_match.get("personal_attribute_id"):
             await self.update_personal_attribute(
-                attribute_id=best_match['personal_attribute_id'],
+                attribute_id=best_match["personal_attribute_id"],
                 description=new_content,
-                recreate_embeddings=True
+                recreate_embeddings=True,
             )
-            return {'type': 'personal_attribute', 'id': best_match['personal_attribute_id']}
-        
+            return {
+                "type": "personal_attribute",
+                "id": best_match["personal_attribute_id"],
+            }
+
         else:
             await self.update_document(
-                document_id=document['id'],
+                document_id=document["id"],
                 content=new_content,
-                recreate_embeddings=True
+                recreate_embeddings=True,
             )
-            return {'type': 'document', 'id': document['id']}
-    
+            return {"type": "document", "id": document["id"]}
+
     async def propose_updates(
         self,
         user_id: str,
         update_request: str,
-        model_name: str = 'nomic-embed-text-768'
+        model_name: str = "nomic-embed-text-768",
     ) -> List[Dict]:
         """Find potential updates but don't apply them yet"""
         matches = await self.search(
@@ -1632,89 +1880,80 @@ class VectorDatabase:
             user_id=user_id,
             threshold=0.75,
             limit=5,
-            model_name=model_name
+            model_name=model_name,
         )
-        
+
         proposals = []
         for match in matches:
             proposal = {
-                'document_id': match['document_id'],
-                'current_content': match['chunk_text'],
-                'similarity': match['similarity'],
-                'content_type': match['content_type'],
-                'title': match['title'],
-                'article_id': match.get('article_id'),
-                'profile_data_id': match.get('profile_data_id'),
-                'personal_attribute_id': match.get('personal_attribute_id'),
-                'proposed_action': 'update'
+                "document_id": match["document_id"],
+                "current_content": match["chunk_text"],
+                "similarity": match["similarity"],
+                "content_type": match["content_type"],
+                "title": match["title"],
+                "article_id": match.get("article_id"),
+                "profile_data_id": match.get("profile_data_id"),
+                "personal_attribute_id": match.get("personal_attribute_id"),
+                "proposed_action": "update",
             }
             proposals.append(proposal)
-        
+
         return proposals
-    
+
     async def apply_confirmed_update(
         self,
         document_id: str,
         new_content: str,
         article_id: Optional[str] = None,
         profile_data_id: Optional[str] = None,
-        personal_attribute_id: Optional[str] = None
+        personal_attribute_id: Optional[str] = None,
     ) -> bool:
         """Apply a confirmed update after user approval"""
-        
+
         if article_id:
             await self.update_article(
-                article_id=article_id,
-                content=new_content,
-                recreate_embeddings=True
+                article_id=article_id, content=new_content, recreate_embeddings=True
             )
         elif profile_data_id:
             profile = self.get_profile_data(profile_data_id)
-            updated_data = self._merge_profile_data(profile['data'], new_content)
+            updated_data = self._merge_profile_data(profile["data"], new_content)
             await self.update_profile_data(
-                profile_id=profile_data_id,
-                data=updated_data,
-                recreate_embeddings=True
+                profile_id=profile_data_id, data=updated_data, recreate_embeddings=True
             )
         elif personal_attribute_id:
             await self.update_personal_attribute(
                 attribute_id=personal_attribute_id,
                 description=new_content,
-                recreate_embeddings=True
+                recreate_embeddings=True,
             )
         else:
             await self.update_document(
-                document_id=document_id,
-                content=new_content,
-                recreate_embeddings=True
+                document_id=document_id, content=new_content, recreate_embeddings=True
             )
-        
+
         return True
-    
+
     # ========================================================================
     # HELPER METHODS
     # ========================================================================
-    
+
     def _chunk_text(
-        self, 
-        text: str, 
-        chunk_size: int = 500, 
-        overlap: int = 50
+        self, text: str, chunk_size: int = 500, overlap: int = 50
     ) -> List[str]:
         """Split text into overlapping chunks"""
         words = text.split()
-        
+
         if len(words) <= chunk_size:
             return [text]
-        
+
         chunks = []
         for i in range(0, len(words), chunk_size - overlap):
-            chunk = ' '.join(words[i:i + chunk_size])
+            chunk = " ".join(words[i : i + chunk_size])
             if chunk:
                 chunks.append(chunk)
-        
+
         return chunks
-    
+
     def _flatten_dict_to_text(self, data: Dict) -> str:
         """Convert dictionary to searchable text"""
         parts = []
@@ -1725,50 +1964,54 @@ class VectorDatabase:
                 parts.append(f"{key}: {', '.join(map(str, value))}")
             elif isinstance(value, dict):
                 parts.append(f"{key}: {self._flatten_dict_to_text(value)}")
-        return '. '.join(parts)
-    
+        return ". ".join(parts)
+
     def _merge_profile_data(self, existing_data: Dict, new_content: str) -> Dict:
         """Merge new content with existing profile data"""
         updated_data = existing_data.copy()
-        
-        if 'description' in updated_data:
-            updated_data['description'] = new_content
-        elif 'details' in updated_data:
-            updated_data['details'] = new_content
+
+        if "description" in updated_data:
+            updated_data["description"] = new_content
+        elif "details" in updated_data:
+            updated_data["details"] = new_content
         else:
-            updated_data['updated_info'] = new_content
-        
+            updated_data["updated_info"] = new_content
+
         return updated_data
-    
+
     def _create_slug(self, title: str) -> str:
         """Create URL-friendly slug from title"""
         import re
+
         slug = title.lower()
-        slug = re.sub(r'[^a-z0-9]+', '-', slug)
-        slug = slug.strip('-')
+        slug = re.sub(r"[^a-z0-9]+", "-", slug)
+        slug = slug.strip("-")
         return slug[:100]
-    
-    async def _create_unique_slug(self, title: str, conn: asyncpg.Connection, user_id: str) -> str:
+
+    async def _create_unique_slug(
+        self, title: str, conn: asyncpg.Connection, user_id: str
+    ) -> str:
         """
         Create a unique slug from title, checking for duplicates and appending suffix if needed.
-        
+
         Args:
             title: Article title
             conn: Database connection
             user_id: User ID to check for duplicates within user's articles
-            
+
         Returns:
             Unique slug string
         """
         base_slug = self._create_slug(title)
         slug = base_slug
         counter = 1
-        
+
         # Check if slug exists for this user
         while True:
             existing = await conn.fetchval(
                 "SELECT id FROM articles WHERE slug = $1 AND user_id = $2",
-                slug, user_id
+                slug,
+                user_id,
             )
             if existing is None:
                 break  # Slug is unique
@@ -1779,7 +2022,8 @@ class VectorDatabase:
             if counter > 1000:
                 # Fallback: add timestamp
                 import time
+
                 slug = f"{base_slug}-{int(time.time())}"
                 break
-        
+
         return slug

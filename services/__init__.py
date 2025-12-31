@@ -2,18 +2,18 @@
 """Services module"""
 
 from .llm_service import (
-    BaseLLMService,
     AnthropicLLMService,
+    BaseLLMService,
     OpenAILLMService,
     get_llm_service,
 )
+from .resume_service import ResumeService, get_resume_service
 from .vector_service import (
     BaseVectorService,
-    SupabaseVectorService,
     ChromaDBVectorService,
+    SupabaseVectorService,
     get_vector_service,
 )
-from .resume_service import ResumeService, get_resume_service
 
 __all__ = [
     # LLM Service
