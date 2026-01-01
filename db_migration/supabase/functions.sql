@@ -209,7 +209,7 @@ CREATE OR REPLACE FUNCTION upsert_document_with_embedding(
   p_title TEXT,
   p_content TEXT,
   p_metadata JSONB DEFAULT '{}'::jsonb,
-  p_tags TEXT[] DEFAULT '{}',
+  p_tags TEXT[] DEFAULT '{}'::TEXT[], -- [] is an array in Python, '{}' is an array in Postgres
   p_embedding_model_name TEXT DEFAULT 'openai-small',
   p_chunks JSONB DEFAULT '[]'::jsonb
 )
@@ -222,6 +222,7 @@ DECLARE
   v_embedding_model_id UUID;
   v_chunk JSONB;
   v_total_chunks INTEGER;
+  v_existing_document_id UUID;
 BEGIN
   -- Get embedding model ID
   SELECT id INTO v_embedding_model_id
@@ -232,19 +233,51 @@ BEGIN
     RAISE EXCEPTION 'Embedding model % not found or not active', p_embedding_model_name;
   END IF;
   
-  -- Insert document
-  INSERT INTO documents (
-    user_id, title, content, metadata, tags
-  ) VALUES (
-    p_user_id, p_title, p_content, p_metadata, p_tags
-  )
-  RETURNING id INTO v_document_id;
+  -- Check for existing document (latest current, non-deleted)
+  SELECT id INTO v_existing_document_id
+  FROM documents
+  WHERE user_id = p_user_id
+    AND title = p_title
+    AND is_current = TRUE
+    AND deleted_at IS NULL
+  ORDER BY updated_at DESC
+  LIMIT 1;
+  
+  IF v_existing_document_id IS NULL THEN
+    -- Insert document
+    INSERT INTO documents (
+      user_id, title, content, metadata, tags
+    ) VALUES (
+      p_user_id, p_title, p_content, p_metadata, p_tags
+    )
+    RETURNING id INTO v_document_id;
+  ELSE
+    -- Update existing document
+    UPDATE documents
+    SET
+      title = p_title,
+      content = p_content,
+      metadata = p_metadata,
+      tags = p_tags,
+      updated_at = NOW()
+    WHERE id = v_existing_document_id
+    RETURNING id INTO v_document_id;
+  END IF;
   
   -- Get total chunks count
   v_total_chunks := jsonb_array_length(p_chunks);
   
-  -- If no chunks provided, create single chunk from full content
   IF v_total_chunks = 0 THEN
+    RAISE EXCEPTION 'p_chunks must contain at least one chunk';
+  END IF;
+  
+  -- Replace embeddings for this document/model with provided chunks
+  DELETE FROM embeddings
+  WHERE document_id = v_document_id
+    AND embedding_model_id = v_embedding_model_id;
+  
+  FOR v_chunk IN SELECT * FROM jsonb_array_elements(p_chunks)
+  LOOP
     INSERT INTO embeddings (
       document_id, 
       embedding_model_id, 
@@ -254,33 +287,18 @@ BEGIN
       total_chunks
     ) VALUES (
       v_document_id, 
-      v_embedding_model_id, 
-      NULL,  -- Will be filled by caller
-      p_content,
-      0,
-      1
-    );
-  ELSE
-    -- Insert embeddings for each chunk
-    FOR v_chunk IN SELECT * FROM jsonb_array_elements(p_chunks)
-    LOOP
-      INSERT INTO embeddings (
-        document_id, 
-        embedding_model_id, 
-        embedding, 
-        chunk_text,
-        chunk_index,
-        total_chunks
-      ) VALUES (
-        v_document_id, 
-        v_embedding_model_id,
-        (v_chunk->>'embedding')::vector,
-        v_chunk->>'text',
-        (v_chunk->>'chunk_index')::INTEGER,
-        v_total_chunks
-      );
-    END LOOP;
-  END IF;
+      v_embedding_model_id,
+      (v_chunk->>'embedding')::vector,
+      v_chunk->>'text',
+      (v_chunk->>'chunk_index')::INTEGER,
+      v_total_chunks
+    )
+    ON CONFLICT (document_id, embedding_model_id, chunk_index)
+    DO UPDATE SET
+      embedding = EXCLUDED.embedding,
+      chunk_text = EXCLUDED.chunk_text,
+      total_chunks = EXCLUDED.total_chunks;
+  END LOOP;
   
   RETURN v_document_id;
 END;

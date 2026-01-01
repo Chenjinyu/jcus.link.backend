@@ -349,27 +349,27 @@ class VectorDatabase:
                 )
 
                 # Create and insert embeddings for each model
-        for model_name in model_names:
-            model = self._models_cache[model_name]
+                for model_name in model_names:
+                    model = self._models_cache[model_name]
 
-            for chunk_index, chunk_text in enumerate(chunks):
-                embedding = await self.create_embedding(chunk_text, model_name)
-                # Convert list to pgvector format: '[0.1, 0.2, ...]'
-                embedding_str = "[" + ",".join(map(str, embedding)) + "]"
+                    for chunk_index, chunk_text in enumerate(chunks):
+                        embedding = await self.create_embedding(chunk_text, model_name)
+                        # Convert list to pgvector format: '[0.1, 0.2, ...]'
+                        embedding_str = "[" + ",".join(map(str, embedding)) + "]"
 
-                await conn.execute(
-                    """
-                    INSERT INTO embeddings
-                    (document_id, embedding_model_id, embedding, chunk_text, chunk_index, total_chunks)
-                    VALUES ($1, $2, $3::vector, $4, $5, $6)
-                    """,
-                    document_id,
-                    model.id,
-                    embedding_str,
-                    chunk_text,
-                    chunk_index,
-                    total_chunks,
-                )
+                        await conn.execute(
+                            """
+                            INSERT INTO embeddings
+                            (document_id, embedding_model_id, embedding, chunk_text, chunk_index, total_chunks)
+                            VALUES ($1, $2, $3::vector, $4, $5, $6)
+                            """,
+                            document_id,
+                            model.id,
+                            embedding_str,
+                            chunk_text,
+                            chunk_index,
+                            total_chunks,
+                        )
 
         return document_id
 
@@ -421,14 +421,14 @@ class VectorDatabase:
                     update_parts.append(f"updated_at = NOW()")
                     params.append(document_id)
 
-                    await conn.execute(
-                        f"""
-                        UPDATE documents
-                        SET {", ".join(update_parts)}
-                        WHERE id = ${param_count}
-                        """,
-                        *params,
-                    )
+                await conn.execute(
+                    f"""
+                    UPDATE documents
+                    SET {", ".join(update_parts)}
+                    WHERE id = ${param_count}
+                    """,
+                    *params,
+                )
 
                 # Recreate embeddings if content changed
                 if recreate_embeddings and content is not None:
@@ -445,40 +445,40 @@ class VectorDatabase:
                     )
 
                     # Create new embeddings
-                chunks = self._chunk_text(content, chunk_size, chunk_overlap)
-                total_chunks = len(chunks)
+                    chunks = self._chunk_text(content, chunk_size, chunk_overlap)
+                    total_chunks = len(chunks)
 
-                for model_id in model_ids:
-                    model_name = next(
-                        (
-                            name
-                            for name, m in self._models_cache.items()
-                            if m.id == model_id
-                        ),
-                        None,
-                    )
+                    for model_id in model_ids:
+                        model_name = next(
+                            (
+                                name
+                                for name, m in self._models_cache.items()
+                                if m.id == model_id
+                            ),
+                            None,
+                        )
 
-                    if model_name:
-                        for chunk_index, chunk_text in enumerate(chunks):
-                            embedding = await self.create_embedding(
-                                chunk_text, model_name
-                            )
-                            # Convert list to pgvector format: '[0.1, 0.2, ...]' when using raw sql.
-                            embedding_str = "[" + ",".join(map(str, embedding)) + "]"
+                        if model_name:
+                            for chunk_index, chunk_text in enumerate(chunks):
+                                embedding = await self.create_embedding(
+                                    chunk_text, model_name
+                                )
+                                # Convert list to pgvector format: '[0.1, 0.2, ...]' when using raw sql.
+                                embedding_str = "[" + ",".join(map(str, embedding)) + "]"
 
-                            await conn.execute(
-                                """
-                                INSERT INTO embeddings
-                                (document_id, embedding_model_id, embedding, chunk_text, chunk_index, total_chunks)
-                                VALUES ($1, $2, $3::vector, $4, $5, $6)
-                                """,
-                                document_id,
-                                model_id,
-                                embedding_str,
-                                chunk_text,
-                                chunk_index,
-                                total_chunks,
-                            )
+                                await conn.execute(
+                                    """
+                                    INSERT INTO embeddings
+                                    (document_id, embedding_model_id, embedding, chunk_text, chunk_index, total_chunks)
+                                    VALUES ($1, $2, $3::vector, $4, $5, $6)
+                                    """,
+                                    document_id,
+                                    model_id,
+                                    embedding_str,
+                                    chunk_text,
+                                    chunk_index,
+                                    total_chunks,
+                                )
 
         return True
 
@@ -639,30 +639,30 @@ class VectorDatabase:
                             total_chunks,
                         )
 
-                # Insert article
-                article_id = await conn.fetchval(
-                    """
-                    INSERT INTO articles
-                    (user_id, document_id, title, subtitle, content, excerpt, tags, category,
-                     status, slug, seo_title, seo_description, og_image, published_at)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
-                    RETURNING id
-                    """,
-                    user_id,
-                    document_id,
-                    title,
-                    subtitle,
-                    content,
-                    excerpt or content[:200],
-                    tags or [],
-                    category,
-                    status,
-                    slug,
-                    seo_title,
-                    seo_description,
-                    og_image,
-                    datetime.now() if status == "published" else None,
-                )
+                        # Insert article
+                        article_id = await conn.fetchval(
+                            """
+                            INSERT INTO articles
+                            (user_id, document_id, title, subtitle, content, excerpt, tags, category,
+                            status, slug, seo_title, seo_description, og_image, published_at)
+                            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+                            RETURNING id
+                            """,
+                            user_id,
+                            document_id,
+                            title,
+                            subtitle,
+                            content,
+                            excerpt or content[:200],
+                            tags or [],
+                            category,
+                            status,
+                            slug,
+                            seo_title,
+                            seo_description,
+                            og_image,
+                            datetime.now() if status == "published" else None,
+                        )
 
         return {"article_id": article_id, "document_id": document_id}
 
@@ -762,14 +762,14 @@ class VectorDatabase:
                     article_update_parts.append(f"updated_at = NOW()")
                     article_params.append(article_id)
 
-                    await conn.execute(
-                        f"""
-                        UPDATE articles
-                        SET {", ".join(article_update_parts)}
-                        WHERE id = ${param_count}
-                        """,
-                        *article_params,
-                    )
+                await conn.execute(
+                    f"""
+                    UPDATE articles
+                    SET {", ".join(article_update_parts)}
+                    WHERE id = ${param_count}
+                    """,
+                    *article_params,
+                )
 
                 # Update document
                 doc_update_parts = []
@@ -795,14 +795,14 @@ class VectorDatabase:
                     doc_update_parts.append(f"updated_at = NOW()")
                     doc_params.append(document_id)
 
-                    await conn.execute(
-                        f"""
-                        UPDATE documents
-                        SET {", ".join(doc_update_parts)}
-                        WHERE id = ${param_count}
-                        """,
-                        *doc_params,
-                    )
+                await conn.execute(
+                    f"""
+                    UPDATE documents
+                    SET {", ".join(doc_update_parts)}
+                    WHERE id = ${param_count}
+                    """,
+                    *doc_params,
+                )
 
                 # Recreate embeddings if needed
                 if recreate_embeddings and content is not None:
