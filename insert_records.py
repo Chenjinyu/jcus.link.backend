@@ -15,6 +15,7 @@ SUPABASE_URL = os.environ.get("SUPABASE_URL", "your-supabase-url")
 print("=" * 20 + SUPABASE_URL + "=" * 20)
 SUPABASE_SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "your-supabase-key")
 print("=" * 20 + SUPABASE_SERVICE_KEY + "=" * 20)
+# used for asyncpg long-lived connection pools
 POSTGRES_URL = os.environ.get("POSTGRES_URL_NON_POOLING", "your-postgres-url")
 print("=" * 20 + POSTGRES_URL + "=" * 20)
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", None)  # Optional if using Ollama

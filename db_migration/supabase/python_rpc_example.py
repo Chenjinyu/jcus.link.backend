@@ -15,7 +15,7 @@ async def search_my_content(query: str, user_id: str):
 
     # 2. Call the PostgreSQL function
     results = supabase.rpc(
-        "search_all_content",
+        "search_similar_content",
         {
             "query_embedding": query_embedding,  # vector parameter
             "user_id_filter": user_id,  # TEXT parameter

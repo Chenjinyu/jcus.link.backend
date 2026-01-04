@@ -1,11 +1,11 @@
 -- ============================================================================
--- SEARCH ALL CONTENT
+-- SEARCH SIMILAR CONTENT
 -- ============================================================================
-DROP FUNCTION IF EXISTS search_all_content(vector, text, float, int);
+DROP FUNCTION IF EXISTS search_similar_content(vector, text, float, int);
 
-CREATE OR REPLACE FUNCTION search_all_content(
+CREATE OR REPLACE FUNCTION search_similar_content(
   query_embedding vector,
-  user_id_filter TEXT,
+  user_id_filter TEXT DEFAULT NULL,
   match_threshold FLOAT DEFAULT 0.7,
   match_count INT DEFAULT 10
 )
@@ -47,7 +47,7 @@ BEGIN
   LEFT JOIN profile_data p ON p.document_id = d.id
   LEFT JOIN personal_attributes pa ON pa.document_id = d.id
   WHERE 
-    d.user_id = user_id_filter
+    (user_id_filter IS NULL OR d.user_id = user_id_filter)
     AND (1 - (e.embedding <=> query_embedding)) > match_threshold
     AND d.deleted_at IS NULL
   ORDER BY similarity DESC
