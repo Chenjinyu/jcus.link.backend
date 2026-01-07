@@ -19,7 +19,15 @@ print("=" * 20 + SUPABASE_SERVICE_KEY + "=" * 20)
 POSTGRES_URL = os.environ.get("POSTGRES_URL_NON_POOLING", "your-postgres-url")
 print("=" * 20 + POSTGRES_URL + "=" * 20)
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", None)  # Optional if using Ollama
+GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY", None)
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
+PROVIDER_NAME = os.environ.get("PROVIDER_NAME", "ollama").lower()
+PROVIDER_KEY = os.environ.get("PROVIDER_KEY")
+
+if PROVIDER_KEY is None and PROVIDER_NAME == "openai":
+    PROVIDER_KEY = OPENAI_API_KEY
+elif PROVIDER_KEY is None and PROVIDER_NAME == "google":
+    PROVIDER_KEY = GOOGLE_API_KEY
 
 # Test user ID (replace with actual user ID)
 JC_USER_ID = "jinyu.chen"
@@ -57,6 +65,8 @@ async def main():
             supabase_url=SUPABASE_URL,
             supabase_key=SUPABASE_SERVICE_KEY,
             postgres_url=POSTGRES_URL,
+            provider_name=PROVIDER_NAME,
+            provider_key=PROVIDER_KEY,
             ollama_url=OLLAMA_URL,
         )
         print("✅ Connected successfully!")

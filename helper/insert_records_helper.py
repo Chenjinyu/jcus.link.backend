@@ -29,17 +29,17 @@ def create_db(
     supabase_url: str,
     supabase_key: str,
     postgres_url: str,
+    provider_name: str,
+    provider_key: Optional[str] = None,
     ollama_url: str = "http://localhost:11434",
-    openai_key: Optional[str] = None,
-    google_key: Optional[str] = None,
 ) -> VectorDatabase:
     """Create and initialize VectorDatabase instance"""
     return VectorDatabase(
         supabase_url=supabase_url,
         supabase_key=supabase_key,
         postgres_url=postgres_url,
-        openai_key=openai_key,
-        google_key=google_key,
+        provider_name=provider_name,
+        provider_key=provider_key,
         ollama_url=ollama_url,
     )
 

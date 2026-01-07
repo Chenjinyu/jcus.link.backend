@@ -2,21 +2,14 @@
 import json
 from dataclasses import dataclass
 from datetime import date, datetime
-from typing import Dict, List, Literal, Optional, Union
+from typing import Any, Dict, List, Literal, Union
 
 import asyncpg
+from asyncpg.pool import PoolConnectionProxy
 import httpx
 import openai
+from google import genai
 from supabase import Client, create_client
-
-try:
-    import google as genai
-
-    GOOGLE_AVAILABLE = True
-except ImportError:
-    GOOGLE_AVAILABLE = False
-    genai = None
-
 
 @dataclass
 class EmbeddingModel:
@@ -26,7 +19,7 @@ class EmbeddingModel:
     model_identifier: str
     dimensions: int
     is_local: bool
-    cost_per_token: Optional[float] = None
+    cost_per_token: float | None = None
 
 
 class VectorDatabase:
@@ -42,29 +35,46 @@ class VectorDatabase:
         supabase_url: str,
         supabase_key: str,
         postgres_url: str,
-        openai_key: Optional[str] = None,
-        google_key: Optional[str] = None,
+        provider_name: Literal["openai", "google", "ollama"],
+        provider_key: str | None = None,
         ollama_url: str = "http://localhost:11434",
     ):
         self.supabase: Client = create_client(supabase_url, supabase_key)
 
         # PostgreSQL connection pool for transactions
         self.postgres_url = postgres_url
-        self.pg_pool: Optional[asyncpg.Pool] = None
+        self.pg_pool: asyncpg.Pool | None = None
 
-        # Initialize AI providers
-        self.openai_client = openai.OpenAI(api_key=openai_key) if openai_key else None
+        # Store provider name
+        self.provider_name = provider_name.lower()
+        if self.provider_name not in ["openai", "google", "ollama"]:
+            raise ValueError(
+                f"Unsupported provider: {provider_name}. Must be one of: openai, google, ollama"
+            )
+
+        # Initialize AI providers based on provider_name
+        self.openai_client = None
+        self.google_client = None
         self.ollama_url = ollama_url
 
-        if google_key and GOOGLE_AVAILABLE:
-            genai.configure(api_key=google_key)
-            self.google_client = genai
-        else:
-            self.google_client = None
+        if self.provider_name == "openai":
+            if not provider_key:
+                raise ValueError("provider_key is required for OpenAI provider")
+            self.openai_client = openai.OpenAI(api_key=provider_key)
+        elif self.provider_name == "google":
+            if not provider_key:
+                raise ValueError("provider_key is required for Google provider")
+            self.google_client = genai.Client(api_key=provider_key)
+        elif self.provider_name == "ollama":
+            # Ollama is local, no API key needed
+            pass
 
-        self._models_cache: Dict[str, EmbeddingModel] = {}
-        self._models_by_id: Dict[str, EmbeddingModel] = {}
+        self._models_cache: dict[str, EmbeddingModel] = {}
+        self._models_by_id: dict[str, EmbeddingModel] = {}
         self._load_models()
+
+        # Set model_name based on provider from available models
+        self.model_name = self._get_default_model_for_provider()
 
     async def init_pool(self):
         """Initialize PostgreSQL connection pool. Call this before using transaction methods."""
@@ -89,8 +99,13 @@ class VectorDatabase:
         """
         Fix profile_data trigger to not set searchable_text (column doesn't exist).
         This is a one-time fix that runs when pool is initialized.
+        Note: DDL statements (DROP, CREATE) don't require a transaction.
         """
+        if not self.pg_pool:
+            return  # Pool not initialized, skip trigger fix
+
         try:
+            # Acquire a connection from the pool (DDL statements auto-commit)
             async with self.pg_pool.acquire() as conn:
                 # Drop and recreate trigger function as no-op
                 await conn.execute("""
@@ -120,7 +135,7 @@ class VectorDatabase:
                 "You may need to run the SQL migration manually: db_migration/supabase/fix_profile_data_trigger.sql"
             )
 
-    def _parse_date(self, date_value: Optional[Union[str, date]]) -> Optional[date]:
+    def _parse_date(self, date_value: Union[str, date] | None) -> date | None:
         """
         Convert string date to Python date object for asyncpg.
 
@@ -146,11 +161,12 @@ class VectorDatabase:
                     raise ValueError(
                         f"Invalid date format: {date_value}. Expected 'YYYY-MM-DD' or 'YYYY/MM/DD'"
                     )
+                    
         raise TypeError(
             f"date_value must be str, date, or None, got {type(date_value)}"
         )
 
-    def _generate_searchable_text_from_profile_data(self, data: Dict) -> str:
+    def _generate_searchable_text_from_profile_data(self, data: dict[str, Any]) -> str:
         """
         Generate searchable text from profile_data JSONB data.
         Replicates the logic from update_profile_data_searchable_text() trigger.
@@ -203,16 +219,48 @@ class VectorDatabase:
 
         return ". ".join(text_parts) if text_parts else ""
 
-    def _load_models(self):
+    def _get_default_model_for_provider(self) -> str:
+        """Get default model name for the current provider"""
+        # Find first available model for this provider
+        for model_name, model in self._models_cache.items():
+            if model.provider == self.provider_name:
+                return model_name
+
+        # Fallback to default model names if not found in cache
+        defaults = {
+            "openai": "text-embedding-3-small",
+            "google": "text-embedding-004",
+            "ollama": "nomic-embed-text",
+        }
+        return defaults.get(self.provider_name, "nomic-embed-text-768")
+
+    def _load_models(self) -> None:
         """Load embedding models from database and set availability based on client initialization"""
+        def _safe_int(value: Any, default: int = 0) -> int:
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return default
+
+        def _safe_float(value: Any) -> float | None:
+            if value is None:
+                return None
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return None
+
         result = (
             self.supabase.table("embedding_models")
             .select("*")
             .eq("is_active", True)
             .execute()
         )
-        for model_data in result.data:
-            provider = model_data["provider"]
+        for model_data in result.data or []:
+            if not isinstance(model_data, dict):
+                continue
+            model_name = str(model_data.get("name", ""))
+            provider = str(model_data.get("provider", ""))
             if provider not in ["openai", "ollama", "google"]:
                 raise ValueError(f"Unsupported provider: {provider}")
 
@@ -224,17 +272,18 @@ class VectorDatabase:
             elif provider == "google" and self.google_client is None:
                 continue
 
-            self._models_cache[model_data["name"]] = EmbeddingModel(
-                id=model_data["id"],
-                name=model_data["name"],
-                provider=model_data["provider"],
-                model_identifier=model_data["model_identifier"],
-                dimensions=model_data["dimensions"],
-                is_local=model_data["is_local"],
-                cost_per_token=model_data.get("cost_per_token"),
+            model_id = str(model_data.get("id", ""))
+            self._models_cache[model_name] = EmbeddingModel(
+                id=model_id,
+                name=model_name,
+                provider=provider,
+                model_identifier=str(model_data.get("model_identifier", "")),
+                dimensions=_safe_int(model_data.get("dimensions", 0)),
+                is_local=bool(model_data.get("is_local", False)),
+                cost_per_token=_safe_float(model_data.get("cost_per_token")),
             )
-            self._models_by_id[str(model_data["id"])] = self._models_cache[
-                model_data["name"]
+            self._models_by_id[model_id] = self._models_cache[
+                model_name
             ]
         print("--" * 20)
         print(self._models_cache)
@@ -244,12 +293,16 @@ class VectorDatabase:
     # ========================================================================
 
     async def create_embedding(
-        self, text: str, model_name: str = "nomic-embed-text-768"
+        self, text: str, model_name: str | None = None
     ) -> List[float]:
         """
         Create embedding using specified model.
         Supports: OpenAI, Ollama, Google Gemini
         """
+        # Use instance model_name if not provided
+        if model_name is None:
+            model_name = self.model_name
+
         model = self._models_cache.get(model_name)
         if not model:
             raise ValueError(f"Model {model_name} not found or not active")
@@ -272,11 +325,15 @@ class VectorDatabase:
                 "OpenAI client not initialized. Provide openai_key in constructor."
             )
 
-        response = self.openai_client.embeddings.create(
-            model=model.model_identifier,
-            input=text,
-            dimensions=model.dimensions if model.dimensions <= 2000 else None,
-        )
+        dimensions = model.dimensions if model.dimensions <= 2000 else None
+        request_params: dict[str, Any] = {
+            "model": model.model_identifier,
+            "input": text,
+        }
+        if dimensions is not None:
+            request_params["dimensions"] = dimensions
+
+        response = self.openai_client.embeddings.create(**request_params)
         return response.data[0].embedding
 
     async def _create_ollama_embedding(
@@ -315,7 +372,7 @@ class VectorDatabase:
 
     async def _insert_embeddings_for_models(
         self,
-        conn: asyncpg.Connection,
+        conn: asyncpg.Connection | PoolConnectionProxy,
         document_id: str,
         chunks: List[str],
         model_names: List[str],
@@ -359,9 +416,9 @@ class VectorDatabase:
         user_id: str,
         title: str,
         content: str,
-        metadata: Dict = None,
-        tags: List[str] = None,
-        model_names: List[str] = None,
+        metadata: dict[str, Any] | None = None,
+        tags: List[str] | None = None,
+        model_names: List[str] | None = None,
         chunk_size: int = 500,
         chunk_overlap: int = 50,
     ) -> str:
@@ -406,10 +463,10 @@ class VectorDatabase:
     async def update_document(
         self,
         document_id: str,
-        title: Optional[str] = None,
-        content: Optional[str] = None,
-        metadata: Optional[Dict] = None,
-        tags: Optional[List[str]] = None,
+        title: str | None = None,
+        content: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        tags: List[str] | None = None,
         recreate_embeddings: bool = True,
         chunk_size: int = 500,
         chunk_overlap: int = 50,
@@ -496,20 +553,26 @@ class VectorDatabase:
 
         return True
 
-    def get_document(self, document_id: str) -> Optional[Dict]:
+    def get_document(self, document_id: str) -> dict[str, Any] | None:
         """Get document by ID"""
         result = (
             self.supabase.table("documents").select("*").eq("id", document_id).execute()
         )
-        return result.data[0] if result.data else None
+        # replace `return result.data[0] if result.data else None` by below
+        # to fix static type check with Pylance
+        data = result.data
+        if not data:
+            return None
+        first = data[0]
+        return first if isinstance(first, dict) else None
 
     def get_documents(
         self,
         user_id: str,
-        tags: Optional[List[str]] = None,
+        tags: List[str] | None = None,
         limit: int = 100,
         offset: int = 0,
-    ) -> List[Dict]:
+    ) -> List[dict[str, Any]]:
         """Get documents with optional filtering"""
         query = (
             self.supabase.table("documents")
@@ -528,7 +591,7 @@ class VectorDatabase:
             .range(offset, offset + limit - 1)
             .execute()
         )
-        return result.data
+        return result.data # type: ignore
 
     # ========================================================================
     # SQL FUNCTION: upsert_document_with_embedding
@@ -539,10 +602,10 @@ class VectorDatabase:
         user_id: str,
         title: str,
         content: str,
-        metadata: Dict = None,
-        tags: List[str] = None,
-        model_name: str = "nomic-embed-text-768",
-        chunks: List[Dict] = None,
+        metadata: dict[str, Any] | None = None,
+        tags: List[str] | None = None,
+        model_name: str | None = None,
+        chunks: list[dict[str, Any]] | None = None,
     ) -> str:
         """
         Call SQL function to upsert document with embeddings.
@@ -550,6 +613,10 @@ class VectorDatabase:
         Args:
             chunks: List of dicts with 'text', 'embedding', 'chunk_index'
         """
+        # Use instance model_name if not provided
+        if model_name is None:
+            model_name = self.model_name
+
         chunks_json = chunks or []
 
         result = self.supabase.rpc(
@@ -564,8 +631,7 @@ class VectorDatabase:
                 "p_chunks": chunks_json,
             },
         ).execute()
-
-        return result.data
+        return result.data # type: ignore
 
     # ========================================================================
     # ARTICLE OPERATIONS
@@ -576,18 +642,18 @@ class VectorDatabase:
         user_id: str,
         title: str,
         content: str,
-        subtitle: Optional[str] = None,
-        excerpt: Optional[str] = None,
-        tags: List[str] = None,
-        category: Optional[str] = None,
+        subtitle: str | None = None,
+        excerpt: str | None = None,
+        tags: List[str] | None = None,
+        category: str | None = None,
         status: str = "draft",
-        seo_title: Optional[str] = None,
-        seo_description: Optional[str] = None,
-        og_image: Optional[str] = None,
-        model_names: List[str] = None,
+        seo_title: str | None = None,
+        seo_description: str | None = None,
+        og_image: str | None = None,
+        model_names: List[str] | None = None,
         chunk_size: int = 500,
         chunk_overlap: int = 50,
-    ) -> Dict[str, str]:
+    ) -> dict[str, Any]:
         """Add article with document and embeddings using database transaction"""
         if not self.pg_pool:
             raise RuntimeError(
@@ -619,8 +685,7 @@ class VectorDatabase:
                 )
 
                 # Insert article
-                article_id = await conn.fetchval(
-                    """
+                article_id = await conn.fetchval("""
                     INSERT INTO articles
                     (user_id, document_id, title, subtitle, content, excerpt, tags, category,
                     status, slug, seo_title, seo_description, og_image, published_at)
@@ -653,16 +718,16 @@ class VectorDatabase:
     async def update_article(
         self,
         article_id: str,
-        title: Optional[str] = None,
-        content: Optional[str] = None,
-        subtitle: Optional[str] = None,
-        excerpt: Optional[str] = None,
-        tags: Optional[List[str]] = None,
-        category: Optional[str] = None,
-        status: Optional[str] = None,
-        seo_title: Optional[str] = None,
-        seo_description: Optional[str] = None,
-        og_image: Optional[str] = None,
+        title: str | None = None,
+        content: str | None = None,
+        subtitle: str | None = None,
+        excerpt: str | None = None,
+        tags: List[str] | None = None,
+        category: str | None = None,
+        status: str | None = None,
+        seo_title: str | None = None,
+        seo_description: str | None = None,
+        og_image: str | None = None,
         recreate_embeddings: bool = True,
         chunk_size: int = 500,
         chunk_overlap: int = 50,
@@ -818,33 +883,42 @@ class VectorDatabase:
             .single()
             .execute()
         )
-
-        if article.data:
-            self.delete_document(article.data["document_id"], soft_delete=soft_delete)
+        article_data = article.data if isinstance(article.data, dict) else None
+        document_id = article.data.get("document_id", "") if article_data else None # type: ignore
+        if document_id:
+            self.delete_document(str(document_id), soft_delete=soft_delete)
 
         return True
 
-    def get_article(self, article_id: str) -> Optional[Dict]:
+    def get_article(self, article_id: str) -> dict[str, Any] | None:
         """Get article by ID"""
         result = (
             self.supabase.table("articles").select("*").eq("id", article_id).execute()
         )
-        return result.data[0] if result.data else None
+        data = result.data
+        if not data:
+            return None
+        first = data[0]
+        return first if isinstance(first, dict) else None
 
-    def get_article_by_slug(self, slug: str) -> Optional[Dict]:
+    def get_article_by_slug(self, slug: str) -> dict[str, Any] | None:
         """Get article by slug"""
         result = self.supabase.table("articles").select("*").eq("slug", slug).execute()
-        return result.data[0] if result.data else None
+        data = result.data
+        if not data:
+            return None
+        first = data[0]
+        return first if isinstance(first, dict) else None
 
     def get_articles(
         self,
         user_id: str,
-        status: Optional[str] = None,
-        category: Optional[str] = None,
-        tags: Optional[List[str]] = None,
+        status: str | None = None,
+        category: str | None = None,
+        tags: List[str] | None = None,
         limit: int = 100,
         offset: int = 0,
-    ) -> List[Dict]:
+    ) -> List[dict[str, Any]]:
         """Get articles with optional filtering"""
         query = self.supabase.table("articles").select("*").eq("user_id", user_id)
 
@@ -861,7 +935,10 @@ class VectorDatabase:
             .range(offset, offset + limit - 1)
             .execute()
         )
-        return result.data
+        data = result.data
+        if not data:
+            return []
+        return [item for item in data if isinstance(item, dict)]
 
     def increment_article_views(self, article_id: str) -> bool:
         """Increment article view count"""
@@ -901,17 +978,17 @@ class VectorDatabase:
             "volunteering",
             "event",
         ],
-        data: Dict,
+        data: dict[str, Any],
         searchable: bool = True,
-        start_date: Optional[str] = None,
-        end_date: Optional[str] = None,
+        start_date: str | None = None,
+        end_date: str | None = None,
         is_current: bool = False,
         is_featured: bool = False,
-        display_order: Optional[int] = None,
-        model_names: List[str] = None,
+        display_order: int | None = None,
+        model_names: List[str] | None = None,
         chunk_size: int = 500,
         chunk_overlap: int = 50,
-    ) -> Dict[str, str]:
+    ) -> dict[str, Any]:
         """Add profile data with optional document/embedding using database transaction"""
         if not self.pg_pool:
             raise RuntimeError(
@@ -996,12 +1073,12 @@ class VectorDatabase:
     async def update_profile_data(
         self,
         profile_id: str,
-        data: Optional[Dict] = None,
-        start_date: Optional[str] = None,
-        end_date: Optional[str] = None,
-        is_current: Optional[bool] = None,
-        is_featured: Optional[bool] = None,
-        display_order: Optional[int] = None,
+        data: dict[str, Any] | None = None,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        is_current: bool | None = None,
+        is_featured: bool | None = None,
+        display_order: int | None = None,
         recreate_embeddings: bool = True,
         chunk_size: int = 500,
         chunk_overlap: int = 50,
@@ -1136,14 +1213,14 @@ class VectorDatabase:
             .execute()
         )
 
-        if profile.data and profile.data["document_id"]:
-            self.delete_document(profile.data["document_id"], soft_delete=False)
+        if profile.data and profile.data["document_id"]: # type: ignore
+            self.delete_document(profile.data["document_id"], soft_delete=False) # type: ignore
         else:
             self.supabase.table("profile_data").delete().eq("id", profile_id).execute()
 
         return True
 
-    def get_profile_data(self, profile_id: str) -> Optional[Dict]:
+    def get_profile_data(self, profile_id: str) -> dict[str, Any] | None:
         """Get profile data by ID"""
         result = (
             self.supabase.table("profile_data")
@@ -1151,17 +1228,21 @@ class VectorDatabase:
             .eq("id", profile_id)
             .execute()
         )
-        return result.data[0] if result.data else None
+        data = result.data
+        if not data:
+            return None
+        first = data[0]
+        return first if isinstance(first, dict) else None
 
     def get_profile_data_list(
         self,
         user_id: str,
-        category: Optional[str] = None,
-        is_current: Optional[bool] = None,
-        is_featured: Optional[bool] = None,
+        category: str | None = None,
+        is_current: bool | None = None,
+        is_featured: bool | None = None,
         limit: int = 100,
         offset: int = 0,
-    ) -> List[Dict]:
+    ) -> List[dict[str, Any]]:
         """Get profile data with optional filtering"""
         query = self.supabase.table("profile_data").select("*").eq("user_id", user_id)
 
@@ -1179,7 +1260,10 @@ class VectorDatabase:
             .range(offset, offset + limit - 1)
             .execute()
         )
-        return result.data
+        data = result.data
+        if not data:
+            return []
+        return [item for item in data if isinstance(item, dict)]
 
     # ========================================================================
     # PERSONAL ATTRIBUTES OPERATIONS
@@ -1193,16 +1277,16 @@ class VectorDatabase:
         ],
         title: str,
         description: str,
-        examples: List[str] = None,
-        importance_score: Optional[int] = None,
-        confidence_level: Optional[int] = None,
-        related_articles: List[str] = None,
-        related_experiences: List[str] = None,
+        examples: List[str] | None = None,
+        importance_score: int | None = None,
+        confidence_level: int | None = None,
+        related_articles: List[str] | None = None,
+        related_experiences: List[str] | None = None,
         searchable: bool = True,
-        model_names: List[str] = None,
+        model_names: List[str] | None = None,
         chunk_size: int = 500,
         chunk_overlap: int = 50,
-    ) -> Dict[str, str]:
+    ) -> dict[str, Any]:
         """Add personal attribute with optional document/embedding using database transaction"""
         if not self.pg_pool:
             raise RuntimeError(
@@ -1293,18 +1377,22 @@ class VectorDatabase:
         attribute_type: str,
         title: str,
         description: str,
-        examples: List[str] = None,
-        importance_score: Optional[int] = None,
-        confidence_level: Optional[int] = None,
-        related_articles: List[str] = None,
-        related_experiences: List[str] = None,
-        model_name: str = "nomic-embed-text-768",
+        examples: List[str] | None = None,
+        importance_score: int | None = None,
+        confidence_level: int | None = None,
+        related_articles: List[str] | None = None,
+        related_experiences: List[str] | None = None,
+        model_name: str | None = None,
         create_searchable: bool = True,
     ) -> str:
         """
         Call SQL function to add personal attribute.
         Returns attribute_id.
         """
+        # Use instance model_name if not provided
+        if model_name is None:
+            model_name = self.model_name
+
         result = self.supabase.rpc(
             "add_personal_attribute",
             {
@@ -1322,7 +1410,7 @@ class VectorDatabase:
             },
         ).execute()
 
-        return result.data
+        return result.data # type: ignore
 
     # ========================================================================
     # SQL FUNCTION: update_personal_attribute
@@ -1331,13 +1419,13 @@ class VectorDatabase:
     def update_personal_attribute_rpc_function(
         self,
         attribute_id: str,
-        title: Optional[str] = None,
-        description: Optional[str] = None,
-        examples: Optional[List[str]] = None,
-        importance_score: Optional[int] = None,
-        confidence_level: Optional[int] = None,
-        related_articles: Optional[List[str]] = None,
-        related_experiences: Optional[List[str]] = None,
+        title: str | None = None,
+        description: str | None = None,
+        examples: List[str] | None = None,
+        importance_score: int | None = None,
+        confidence_level: int | None = None,
+        related_articles: List[str] | None = None,
+        related_experiences: List[str] | None = None,
         recreate_embedding: bool = True,
     ) -> bool:
         """
@@ -1359,18 +1447,18 @@ class VectorDatabase:
             },
         ).execute()
 
-        return result.data
+        return result.data # type: ignore
 
     async def update_personal_attribute(
         self,
         attribute_id: str,
-        title: Optional[str] = None,
-        description: Optional[str] = None,
-        examples: Optional[List[str]] = None,
-        importance_score: Optional[int] = None,
-        confidence_level: Optional[int] = None,
-        related_articles: Optional[List[str]] = None,
-        related_experiences: Optional[List[str]] = None,
+        title: str | None = None,
+        description: str | None = None,
+        examples: List[str] | None = None,
+        importance_score: int | None = None,
+        confidence_level: int | None = None,
+        related_articles: List[str] | None = None,
+        related_experiences: List[str] | None = None,
         recreate_embeddings: bool = True,
         chunk_size: int = 500,
         chunk_overlap: int = 50,
@@ -1504,8 +1592,10 @@ class VectorDatabase:
             .execute()
         )
 
-        if attr.data and attr.data["document_id"]:
-            self.delete_document(attr.data["document_id"], soft_delete=False)
+        attr_data = attr.data if isinstance(attr.data, dict) else None
+        document_id = attr_data.get("document_id") if attr_data else None
+        if document_id:
+            self.delete_document(str(document_id), soft_delete=False)
         else:
             self.supabase.table("personal_attributes").delete().eq(
                 "id", attribute_id
@@ -1513,7 +1603,7 @@ class VectorDatabase:
 
         return True
 
-    def get_personal_attribute(self, attribute_id: str) -> Optional[Dict]:
+    def get_personal_attribute(self, attribute_id: str) -> dict[str, Any] | None:
         """Get personal attribute by ID"""
         result = (
             self.supabase.table("personal_attributes")
@@ -1521,16 +1611,20 @@ class VectorDatabase:
             .eq("id", attribute_id)
             .execute()
         )
-        return result.data[0] if result.data else None
+        data = result.data
+        if not data:
+            return None
+        first = data[0]
+        return first if isinstance(first, dict) else None
 
     def get_personal_attributes(
         self,
         user_id: str,
-        attribute_type: Optional[str] = None,
-        min_importance: Optional[int] = None,
+        attribute_type: str | None = None,
+        min_importance: int | None = None,
         limit: int = 100,
         offset: int = 0,
-    ) -> List[Dict]:
+    ) -> List[dict[str, Any]]:
         """Get personal attributes with optional filtering"""
         query = (
             self.supabase.table("personal_attributes")
@@ -1550,7 +1644,10 @@ class VectorDatabase:
             .range(offset, offset + limit - 1)
             .execute()
         )
-        return result.data
+        data = result.data
+        if not data:
+            return []
+        return [item for item in data if isinstance(item, dict)]
 
     # ========================================================================
     # SEARCH OPERATIONS (Using SQL Functions)
@@ -1560,12 +1657,12 @@ class VectorDatabase:
         self,
         query: str,
         user_id: str,
-        content_types: Optional[List[str]] = None,
-        tags: Optional[List[str]] = None,
+        content_types: List[str] | None = None,
+        tags: List[str] | None = None,
         threshold: float = 0.7,
         limit: int = 10,
-        model_name: str = "nomic-embed-text-768",
-    ) -> List[Dict]:
+        model_name: str | None = None,
+    ) -> List[dict[str, Any]]:
         """
         Search across all content using vector similarity.
         Uses the search_documents SQL function via Supabase RPC.
@@ -1581,6 +1678,10 @@ class VectorDatabase:
         Note: Uses Supabase client (single operation) - no transaction needed.
         For multi-operation atomicity, use asyncpg pool with transactions.
         """
+        # Use instance model_name if not provided
+        if model_name is None:
+            model_name = self.model_name
+
         query_embedding = await self.create_embedding(query, model_name)
 
         model = self._models_cache.get(model_name)
@@ -1602,7 +1703,10 @@ class VectorDatabase:
         ).execute()
 
         # Results include 'similarity' field from SQL function
-        return results.data
+        data = results.data
+        if not data:
+            return []
+        return [item for item in data if isinstance(item, dict)] # type: ignore
 
     async def search_all_similar_content_rpc_function(
         self,
@@ -1610,12 +1714,16 @@ class VectorDatabase:
         user_id: str,
         threshold: float = 0.7,
         limit: int = 10,
-        model_name: str = "nomic-embed-text-768",
-    ) -> List[Dict]:
+        model_name: str | None = None,
+    ) -> List[dict[str, Any]]:
         """
         Simplified search across all content.
         Uses the search_similar_content SQL function.
         """
+        # Use instance model_name if not provided
+        if model_name is None:
+            model_name = self.model_name
+
         query_embedding = await self.create_embedding(query, model_name)
 
         results = self.supabase.rpc(
@@ -1628,7 +1736,10 @@ class VectorDatabase:
             },
         ).execute()
 
-        return results.data
+        data = results.data
+        if not data:
+            return []
+        return [item for item in data if isinstance(item, dict)] # type: ignore
 
     # ========================================================================
     # SMART UPDATE OPERATIONS
@@ -1639,11 +1750,15 @@ class VectorDatabase:
         user_id: str,
         update_description: str,
         new_content: str,
-        content_type: Optional[str] = None,
+        content_type: str | None = None,
         similarity_threshold: float = 0.85,
-        model_name: str = "nomic-embed-text-768",
-    ) -> Dict[str, any]:
+        model_name: str | None = None,
+    ) -> dict[str, Any]:
         """Intelligently find and update documents based on semantic similarity"""
+        # Use instance model_name if not provided
+        if model_name is None:
+            model_name = self.model_name
+
         matches = await self.search_rpc_function(
             query=update_description,
             user_id=user_id,
@@ -1664,6 +1779,12 @@ class VectorDatabase:
         document_id = best_match["document_id"]
 
         document = self.get_document(document_id)
+        if not document:
+            return {
+                "success": False,
+                "message": f"Document {document_id} not found",
+                "matches": matches,
+            }
 
         update_result = await self._apply_smart_update(
             document=document, best_match=best_match, new_content=new_content
@@ -1682,8 +1803,8 @@ class VectorDatabase:
         }
 
     async def _apply_smart_update(
-        self, document: Dict, best_match: Dict, new_content: str
-    ) -> Dict:
+        self, document: dict[str, Any], best_match: dict[str, Any], new_content: str
+    ) -> dict[str, Any]:
         """Apply update to the appropriate table based on match type"""
 
         if best_match.get("article_id"):
@@ -1696,6 +1817,10 @@ class VectorDatabase:
 
         elif best_match.get("profile_data_id"):
             profile = self.get_profile_data(best_match["profile_data_id"])
+            if not profile:
+                raise ValueError(
+                    f"Profile data {best_match['profile_data_id']} not found"
+                )
             updated_data = self._merge_profile_data(profile["data"], new_content)
 
             await self.update_profile_data(
@@ -1728,9 +1853,13 @@ class VectorDatabase:
         self,
         user_id: str,
         update_request: str,
-        model_name: str = "nomic-embed-text-768",
-    ) -> List[Dict]:
+        model_name: str | None = None,
+    ) -> List[dict[str, Any]]:
         """Find potential updates but don't apply them yet"""
+        # Use instance model_name if not provided
+        if model_name is None:
+            model_name = self.model_name
+
         matches = await self.search_rpc_function(
             query=update_request,
             user_id=user_id,
@@ -1760,9 +1889,9 @@ class VectorDatabase:
         self,
         document_id: str,
         new_content: str,
-        article_id: Optional[str] = None,
-        profile_data_id: Optional[str] = None,
-        personal_attribute_id: Optional[str] = None,
+        article_id: str | None = None,
+        profile_data_id: str | None = None,
+        personal_attribute_id: str | None = None,
     ) -> bool:
         """Apply a confirmed update after user approval"""
 
@@ -1772,10 +1901,11 @@ class VectorDatabase:
             )
         elif profile_data_id:
             profile = self.get_profile_data(profile_data_id)
-            updated_data = self._merge_profile_data(profile["data"], new_content)
-            await self.update_profile_data(
-                profile_id=profile_data_id, data=updated_data, recreate_embeddings=True
-            )
+            if profile and "data" in profile:
+                updated_data = self._merge_profile_data(profile["data"], new_content)
+                await self.update_profile_data(
+                    profile_id=profile_data_id, data=updated_data, recreate_embeddings=True
+                )
         elif personal_attribute_id:
             await self.update_personal_attribute(
                 attribute_id=personal_attribute_id,
@@ -1810,7 +1940,7 @@ class VectorDatabase:
 
         return chunks
 
-    def _flatten_dict_to_text(self, data: Dict) -> str:
+    def _flatten_dict_to_text(self, data: dict[str, Any]) -> str:
         """Convert dictionary to searchable text"""
         parts = []
         for key, value in data.items():
@@ -1822,7 +1952,7 @@ class VectorDatabase:
                 parts.append(f"{key}: {self._flatten_dict_to_text(value)}")
         return ". ".join(parts)
 
-    def _merge_profile_data(self, existing_data: Dict, new_content: str) -> Dict:
+    def _merge_profile_data(self, existing_data: dict[str, Any], new_content: str) -> dict[str, Any]:
         """Merge new content with existing profile data"""
         updated_data = existing_data.copy()
 
@@ -1845,7 +1975,7 @@ class VectorDatabase:
         return slug[:100]
 
     async def _create_unique_slug(
-        self, title: str, conn: asyncpg.Connection, user_id: str
+        self, title: str, conn: asyncpg.Connection | PoolConnectionProxy, user_id: str
     ) -> str:
         """
         Create a unique slug from title, checking for duplicates and appending suffix if needed.
